@@ -7,6 +7,42 @@ const storageKey = "timeline-items";
 const storageEvent = "timeline-items-updated";
 let cachedRaw: string | null = null;
 let cachedItems: TimelineItem[] | null = null;
+let writeTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingRaw: string | null = null;
+
+function schedulePersist(raw: string) {
+  pendingRaw = raw;
+  if (writeTimer !== null) return;
+  writeTimer = setTimeout(() => {
+    writeTimer = null;
+    const toWrite = pendingRaw;
+    pendingRaw = null;
+    if (toWrite !== null) {
+      try {
+        window.localStorage.setItem(storageKey, toWrite);
+        cachedRaw = null;
+      } catch {
+        // Ignore quota or storage failures.
+      }
+    }
+  }, 150);
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", () => {
+    if (writeTimer !== null) clearTimeout(writeTimer);
+    writeTimer = null;
+    if (pendingRaw !== null) {
+      try {
+        window.localStorage.setItem(storageKey, pendingRaw);
+        cachedRaw = null;
+      } catch {
+        // Ignore quota or storage failures.
+      }
+      pendingRaw = null;
+    }
+  });
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -113,6 +149,7 @@ export function parseStoredItems(stored: string | null, fallback: TimelineItem[]
 
 export function readStoredItems(fallback: TimelineItem[]) {
   if (typeof window === "undefined") return fallback;
+  if (pendingRaw !== null && cachedItems !== null) return cachedItems;
 
   try {
     const stored = window.localStorage.getItem(storageKey);
@@ -135,15 +172,24 @@ export function writeStoredItems(items: TimelineItem[]) {
   const serialized = JSON.stringify(items);
   cachedRaw = serialized;
   cachedItems = items;
-  window.localStorage.setItem(storageKey, serialized);
+  schedulePersist(serialized);
   window.dispatchEvent(new Event(storageEvent));
 }
 
 export function subscribeToStoredItems(onChange: () => void) {
   const handleStorage = (event: StorageEvent) => {
-    if (event.key === storageKey) onChange();
+    if (event.key === storageKey) {
+      if (pendingRaw === null) {
+        cachedRaw = null;
+        cachedItems = null;
+      }
+      onChange();
+    }
   };
-  const handleTimelineUpdate = () => onChange();
+  const handleTimelineUpdate = () => {
+    cachedRaw = null;
+    onChange();
+  };
 
   window.addEventListener("storage", handleStorage);
   window.addEventListener(storageEvent, handleTimelineUpdate);

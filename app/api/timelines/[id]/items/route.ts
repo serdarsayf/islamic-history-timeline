@@ -7,7 +7,11 @@ type Context = { params: Promise<{ id: string }> };
 export async function GET(_request: Request, context: Context) {
   const { supabase } = await requireUser();
   const { id } = await context.params;
-  const { data, error } = await supabase.from("timeline_items").select("*, timeline_item_tags(tag_id)").eq("timeline_id", id).order("start_year");
+  const { data, error } = await supabase
+    .from("timeline_items")
+    .select("id, timeline_id, type, name, description, box_color, text_color, start_year, start_era, end_year, end_era, text_position, created_at, updated_at, timeline_item_tags(tag_id)")
+    .eq("timeline_id", id)
+    .order("start_year");
   if (error) return NextResponse.json({ error: error.message }, { status: 404 });
   return NextResponse.json({ items: data });
 }

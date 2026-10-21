@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import type { TimelineItem } from "../lib/timeline/types";
 import { getItemDistance } from "../lib/timeline/geometry";
 
@@ -18,7 +18,7 @@ type TimelineItemVisualProps = {
   onItemClick: (event: React.MouseEvent, itemId: number) => void;
 };
 
-function TimelineItemVisual({
+function TimelineItemVisualImpl({
   item,
   row,
   zoom,
@@ -33,7 +33,10 @@ function TimelineItemVisual({
   onItemPointerLeave,
   onItemClick,
 }: TimelineItemVisualProps) {
-  const itemDistance = getItemDistance(row, zoom);
+  const itemDistance = useMemo(
+    () => getItemDistance(row, zoom),
+    [row, zoom]
+  );
   // Half the timeline axis thickness, so connectors stop at its border.
   const axisHalfThickness = 4;
   const connectorLength = Math.max(
@@ -173,4 +176,4 @@ function TimelineItemVisual({
   );
 }
 
-export default memo(TimelineItemVisual);
+export default memo(TimelineItemVisualImpl);

@@ -205,6 +205,15 @@ body {
   font-size: 24px;
 }
 
+.timeline-item-list {
+  contain: layout paint;
+}
+
+.timeline-item-list > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 68px;
+}
+
 @media (max-width: 720px) {
   .public-timeline {
     padding: 28px 18px;

@@ -77,6 +77,38 @@ import {
 // TIMELINE COMPONENT
 // ─────────────────────────────────────
 
+function useRafThrottle(callback: (clientX: number, clientY: number) => void) {
+  const callbackRef = useRef(callback);
+  const frameRef = useRef<number | null>(null);
+  const latestCoordinatesRef = useRef<{ clientX: number; clientY: number } | null>(null);
+
+  useEffect(() => {
+    callbackRef.current = callback;
+  }, [callback]);
+
+  const cancel = useCallback(() => {
+    if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+    frameRef.current = null;
+    latestCoordinatesRef.current = null;
+  }, []);
+
+  const schedule = useCallback((clientX: number, clientY: number) => {
+    latestCoordinatesRef.current = { clientX, clientY };
+    if (frameRef.current !== null) return;
+
+    frameRef.current = requestAnimationFrame(() => {
+      frameRef.current = null;
+      const coordinates = latestCoordinatesRef.current;
+      latestCoordinatesRef.current = null;
+      if (coordinates) callbackRef.current(coordinates.clientX, coordinates.clientY);
+    });
+  }, []);
+
+  useEffect(() => cancel, [cancel]);
+
+  return { schedule, cancel };
+}
+
 export default function Timeline() {
   // ─────────────────────────────────────
   // TIMELINE DATA
@@ -439,7 +471,7 @@ export default function Timeline() {
     setSelectedItemId(itemId);
   }
 
-  function startEditingItem(item: TimelineItem, fromList = false) {
+  const startEditingItem = useCallback((item: TimelineItem, fromList = false) => {
     setEditingItemId(item.id);
     setEditingFromList(fromList);
     setForm({
@@ -469,7 +501,16 @@ export default function Timeline() {
     setShowItemList(false);
     setSelectedItemId(null);
     setShowMetaTags(false);
-  }
+  }, []);
+
+  const handleTimelineListSelect = useCallback(
+    (item: TimelineItem) => startEditingItem(item, true),
+    [startEditingItem]
+  );
+  const handleTimelineListClose = useCallback(
+    () => setShowItemList(false),
+    []
+  );
 
   // ─────────────────────────────────────
   // ITEM POINTER DOWN
@@ -803,19 +844,17 @@ export default function Timeline() {
   // MOVE TIMELINE CANVAS
   // ─────────────────────────────────────
 
-  function handlePointerMove(
-    event: React.PointerEvent<HTMLDivElement>
-  ) {
+  function applyPointerMove(clientX: number, clientY: number) {
     if (!isDragging) {
       return;
     }
 
     const deltaX =
-      event.clientX -
+      clientX -
       dragStartX.current;
 
     const deltaY =
-      event.clientY -
+      clientY -
       dragStartY.current;
 
     // Once the pointer moves more than a
@@ -851,6 +890,17 @@ export default function Timeline() {
     );
   }
 
+  const { schedule: schedulePointerMove, cancel: cancelScheduledPointerMove } =
+    useRafThrottle(applyPointerMove);
+
+  function handlePointerMove(
+    event: React.PointerEvent<HTMLDivElement>
+  ) {
+    const { clientX, clientY } = event;
+    setPointerX(clientX);
+    schedulePointerMove(clientX, clientY);
+  }
+
   // ─────────────────────────────────────
   // STOP DRAGGING
   // ─────────────────────────────────────
@@ -858,6 +908,9 @@ export default function Timeline() {
   function handlePointerUp(
     event: React.PointerEvent<HTMLDivElement>
   ) {
+    const { clientX, clientY } = event;
+    cancelScheduledPointerMove();
+    applyPointerMove(clientX, clientY);
     setIsDragging(false);
 
     try {
@@ -990,17 +1043,15 @@ export default function Timeline() {
   // TICK GENERATION
   // ─────────────────────────────────────
 
-  const minorInterval =
-    getMinorTickInterval(
-      pixelsPerYear,
-      zoom
-    );
+  const minorInterval = useMemo(
+    () => getMinorTickInterval(pixelsPerYear, zoom),
+    [pixelsPerYear, zoom]
+  );
 
-  const labelInterval =
-    getLabelInterval(
-      pixelsPerYear,
-      zoom
-    );
+  const labelInterval = useMemo(
+    () => getLabelInterval(pixelsPerYear, zoom),
+    [pixelsPerYear, zoom]
+  );
 
   const itemLabelFontSize =
     20 * zoom;
@@ -1089,33 +1140,48 @@ export default function Timeline() {
         lineageNodes.find((node) => node.item.id === lineageItemId)?.y
       )
     : null;
-  const routeRange = lineageBounds
-    ? {
-        start: viewPosition + lineageBounds.left / (pixelsPerYear * zoom),
-        end: viewPosition + lineageBounds.right / (pixelsPerYear * zoom),
-      }
-    : null;
-  const clearThroughRows = lineageBounds
-    ? getLineageClearanceRows(lineageBounds, axisY, zoom)
-    : { above: null, below: null };
-  lineageNodes.forEach(({ item, row }) => {
-    const band = clearThroughRows[item.position];
-    clearThroughRows[item.position] = band
-      ? { min: Math.min(band.min, row), max: Math.max(band.max, row) }
-      : { min: row, max: row };
-  });
-  const itemRows = lineageIds
-    ? getItemRowsAroundLineage(
-        visibleItems,
-        pixelsPerYear,
-        originalItemRows,
-        lineageItemRows,
-        lineageIds,
-        routeRange,
-        clearThroughRows,
-        lineageTeacherIds
-      )
-    : originalItemRows;
+  const routeRange = useMemo(
+    () => lineageBounds
+      ? {
+          start: viewPosition + lineageBounds.left / (pixelsPerYear * zoom),
+          end: viewPosition + lineageBounds.right / (pixelsPerYear * zoom),
+        }
+      : null,
+    [lineageBounds, viewPosition, pixelsPerYear, zoom]
+  );
+  const clearanceRows = useMemo(
+    () => lineageBounds
+      ? getLineageClearanceRows(lineageBounds, axisY, zoom)
+      : { above: null, below: null },
+    [lineageBounds, axisY, zoom]
+  );
+  const clearThroughRows = useMemo(() => {
+    const rows = { above: clearanceRows.above, below: clearanceRows.below };
+    visibleItems.forEach((item) => {
+      if (!lineageIds?.has(item.id)) return;
+      const row = lineageItemRows.get(item.id) ?? 0;
+      const band = rows[item.position];
+      rows[item.position] = band
+        ? { min: Math.min(band.min, row), max: Math.max(band.max, row) }
+        : { min: row, max: row };
+    });
+    return rows;
+  }, [clearanceRows, visibleItems, lineageIds, lineageItemRows]);
+  const itemRows = useMemo(
+    () => lineageIds
+      ? getItemRowsAroundLineage(
+          visibleItems,
+          pixelsPerYear,
+          originalItemRows,
+          lineageItemRows,
+          lineageIds,
+          routeRange,
+          clearThroughRows,
+          lineageTeacherIds
+        )
+      : originalItemRows,
+    [visibleItems, pixelsPerYear, originalItemRows, lineageItemRows, lineageIds, routeRange, clearThroughRows, lineageTeacherIds]
+  );
 
   const teacherOptions = useMemo(() => {
     const descendantIds = editingItemId === null
@@ -1163,6 +1229,16 @@ export default function Timeline() {
     (tagName) => isMetaTag(tags, tagName)
   );
 
+  const selectedRow = selectedItem
+    ? itemRows.get(selectedItem.id) ?? 0
+    : 0;
+  const selectedItemY = useMemo(
+    () => selectedItem
+      ? getItemY(selectedItem, selectedRow, axisY, zoom)
+      : 0,
+    [selectedItem, selectedRow, axisY, zoom]
+  );
+
   let detailWindowPosition:
     | {
         x: number;
@@ -1176,16 +1252,6 @@ export default function Timeline() {
     | null = null;
 
   if (selectedItem) {
-    const selectedRow =
-      itemRows.get(selectedItem.id) ??
-      0;
-    const selectedItemY =
-      getItemY(
-        selectedItem,
-        selectedRow,
-        axisY,
-        zoom
-      );
     let selectedItemX =
       viewportWidth / 2 +
       getRelativePosition(
@@ -1295,12 +1361,7 @@ export default function Timeline() {
         onPointerDown={
           handlePointerDown
         }
-        onPointerMove={
-          (event) => {
-            setPointerX(event.clientX);
-            handlePointerMove(event);
-          }
-        }
+        onPointerMove={handlePointerMove}
         onPointerLeave={() =>
           setPointerX(null)
         }
@@ -2142,8 +2203,8 @@ export default function Timeline() {
         <TimelineItemList
           items={items}
           scrollTopRef={itemListScrollTop}
-          onSelect={(item) => startEditingItem(item, true)}
-          onClose={() => setShowItemList(false)}
+          onSelect={handleTimelineListSelect}
+          onClose={handleTimelineListClose}
         />
       )}
 

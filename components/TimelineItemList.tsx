@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { dateToNumber, getYearLabel } from "../lib/timeline";
 import type { TimelineItem } from "../lib/timeline/types";
 
@@ -29,6 +29,49 @@ type TimelineItemListProps = {
   onClose: () => void;
 };
 
+type TimelineItemRowProps = {
+  item: TimelineItem;
+  onSelect: (item: TimelineItem) => void;
+};
+
+function TimelineItemRowImpl({ item, onSelect }: TimelineItemRowProps) {
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(item)}
+      style={{
+        display: "block",
+        width: "100%",
+        padding: "10px",
+        marginBottom: "6px",
+        border: "1px solid #e2e8f0",
+        borderRadius: "4px",
+        backgroundColor: "white",
+        color: "#1e293b",
+        textAlign: "left",
+        cursor: "pointer",
+      }}
+    >
+      <span style={{ display: "block", fontWeight: 600 }}>
+        {item.title}
+      </span>
+      {item.fullName && (
+        <span style={{ display: "block", marginTop: "2px", color: "#7b8490", fontSize: "12px", lineHeight: 1.35 }}>
+          {item.fullName}
+        </span>
+      )}
+      <span style={{ display: "block", marginTop: "3px", color: "#64748b", fontSize: "12px" }}>
+        {getYearLabel(dateToNumber(item.startDate))}
+        {item.endDate
+          ? ` - ${getYearLabel(dateToNumber(item.endDate))}`
+          : ""}
+      </span>
+    </button>
+  );
+}
+
+export const TimelineItemRow = memo(TimelineItemRowImpl);
+
 export default function TimelineItemList({
   items,
   scrollTopRef,
@@ -53,7 +96,7 @@ export default function TimelineItemList({
       onScroll={(event) => {
         scrollTopRef.current = event.currentTarget.scrollTop;
       }}
-      className="timeline-floating-panel timeline-list-panel"
+      className="timeline-floating-panel timeline-list-panel timeline-item-list"
       style={{
         position: "absolute",
         top: "20px",
@@ -115,38 +158,7 @@ export default function TimelineItemList({
         </p>
       ) : (
         orderedItems.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            onClick={() => onSelect(item)}
-            style={{
-              display: "block",
-              width: "100%",
-              padding: "10px",
-              marginBottom: "6px",
-              border: "1px solid #e2e8f0",
-              borderRadius: "4px",
-              backgroundColor: "white",
-              color: "#1e293b",
-              textAlign: "left",
-              cursor: "pointer",
-            }}
-          >
-            <span style={{ display: "block", fontWeight: 600 }}>
-              {item.title}
-            </span>
-            {item.fullName && (
-              <span style={{ display: "block", marginTop: "2px", color: "#7b8490", fontSize: "12px", lineHeight: 1.35 }}>
-                {item.fullName}
-              </span>
-            )}
-            <span style={{ display: "block", marginTop: "3px", color: "#64748b", fontSize: "12px" }}>
-              {getYearLabel(dateToNumber(item.startDate))}
-              {item.endDate
-                ? ` - ${getYearLabel(dateToNumber(item.endDate))}`
-                : ""}
-            </span>
-          </button>
+          <TimelineItemRow key={item.id} item={item} onSelect={onSelect} />
         ))
       )}
     </div>
