@@ -175,52 +175,70 @@ function useRafThrottle<Args extends unknown[]>(callback: (...args: Args) => voi
   return schedule;
 }
 
-function measureItemRowHeights(button: HTMLButtonElement, items: TimelineItem[]) {
-  const measurementRoot = document.createElement("div");
-  measurementRoot.style.position = "fixed";
-  measurementRoot.style.top = "0";
-  measurementRoot.style.left = "-10000px";
-  measurementRoot.style.width = `${button.getBoundingClientRect().width}px`;
-  measurementRoot.style.visibility = "hidden";
-  measurementRoot.style.pointerEvents = "none";
-  document.body.append(measurementRoot);
+function countWrappedLines(
+  text: string,
+  style: CSSStyleDeclaration,
+  width: number,
+  context: CanvasRenderingContext2D
+) {
+  context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return 1;
 
-  const rows = items.map((item) => {
-    const wrapper = document.createElement("div");
-    wrapper.style.display = "flow-root";
-    wrapper.style.width = "100%";
-
-    const clonedButton = button.cloneNode(true) as HTMLButtonElement;
-    const spans = Array.from(clonedButton.querySelectorAll("span"));
-    const title = spans[0];
-    const date = spans[spans.length - 1];
-    title.textContent = item.title;
-
-    let fullName = spans.length === 3 ? spans[1] : null;
-    if (item.fullName) {
-      if (!fullName) {
-        fullName = document.createElement("span");
-        fullName.setAttribute("style", "display: block; margin-top: 2px; color: #7b8490; font-size: 12px; line-height: 1.35;");
-        date.before(fullName);
-      }
-      fullName.textContent = item.fullName;
+  let line = words[0];
+  let lineCount = 1;
+  words.slice(1).forEach((word) => {
+    const nextLine = `${line} ${word}`;
+    if (context.measureText(nextLine).width <= width) {
+      line = nextLine;
     } else {
-      fullName?.remove();
+      line = word;
+      lineCount += 1;
     }
+  });
+  return lineCount;
+}
 
-    date.textContent = `${getYearLabel(dateToNumber(item.startDate))}${item.endDate
+function measureItemRowHeights(button: HTMLButtonElement, items: TimelineItem[]) {
+  const context = document.createElement("canvas").getContext("2d");
+  if (!context) return null;
+
+  const buttonStyle = getComputedStyle(button);
+  const spans = button.querySelectorAll("span");
+  const titleStyle = getComputedStyle(spans[0]);
+  const dateStyle = getComputedStyle(spans[spans.length - 1]);
+  const contentWidth = button.clientWidth -
+    parseFloat(buttonStyle.paddingLeft) -
+    parseFloat(buttonStyle.paddingRight);
+  const verticalSpace =
+    parseFloat(buttonStyle.paddingTop) +
+    parseFloat(buttonStyle.paddingBottom) +
+    parseFloat(buttonStyle.borderTopWidth) +
+    parseFloat(buttonStyle.borderBottomWidth) +
+    parseFloat(buttonStyle.marginBottom);
+  const rowHeights: Record<number, number> = {};
+
+  items.forEach((item) => {
+    const titleLines = countWrappedLines(item.title, titleStyle, contentWidth, context);
+    const fullNameLines = item.fullName
+      ? countWrappedLines(item.fullName, {
+          fontStyle: "normal",
+          fontWeight: "400",
+          fontSize: "12px",
+          fontFamily: "Arial, sans-serif",
+        } as CSSStyleDeclaration, contentWidth, context)
+      : 0;
+    const dateText = `${getYearLabel(dateToNumber(item.startDate))}${item.endDate
       ? ` - ${getYearLabel(dateToNumber(item.endDate))}`
       : ""}`;
-    wrapper.append(clonedButton);
-    measurementRoot.append(wrapper);
-    return { item, wrapper };
+    const dateLines = countWrappedLines(dateText, dateStyle, contentWidth, context);
+
+    rowHeights[item.id] = verticalSpace +
+      titleLines * parseFloat(titleStyle.lineHeight) +
+      (fullNameLines ? 2 + fullNameLines * 16.2 : 0) +
+      3 + dateLines * parseFloat(dateStyle.lineHeight);
   });
 
-  const rowHeights: Record<number, number> = {};
-  rows.forEach(({ item, wrapper }) => {
-    rowHeights[item.id] = wrapper.getBoundingClientRect().height;
-  });
-  measurementRoot.remove();
   return rowHeights;
 }
 
