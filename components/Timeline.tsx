@@ -1060,6 +1060,14 @@ export default function Timeline() {
     () => filterItemsByTags(items, activeTagNames, tags),
     [items, activeTagNames, tags]
   );
+  const renderItems = useMemo(
+    () => visibleItems.filter((item) => {
+      const itemStart = dateToNumber(item.startDate);
+      const itemEnd = item.endDate ? dateToNumber(item.endDate) : itemStart;
+      return itemEnd >= startVisibleYear && itemStart <= endVisibleYear;
+    }),
+    [visibleItems, startVisibleYear, endVisibleYear]
+  );
 
   const originalItemRows = useMemo(
     () => getItemRows(visibleItems, pixelsPerYear),
@@ -1733,7 +1741,7 @@ export default function Timeline() {
             </svg>
           )}
 
-          {visibleItems.map(
+          {renderItems.map(
             (item) => {
               const x =
                 getRelativePosition(
