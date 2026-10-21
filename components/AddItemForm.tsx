@@ -1,9 +1,14 @@
+import dynamic from "next/dynamic";
 import { memo, useCallback, useMemo, useState } from "react";
 import type { Dispatch, FormEvent, SetStateAction } from "react";
 import type { ItemFormState, TimelineTag } from "../lib/timeline/types";
 import { getTagDepth } from "../lib/timeline/tags";
-import DatePickerPanel from "./DatePickerPanel";
 import { useEscapeLayer } from "./useEscapeLayer";
+
+const DatePickerPanel = dynamic(() => import("./DatePickerPanel"), {
+  ssr: false,
+  loading: () => null,
+});
 
 const monthAbbreviations = [
   "jan", "feb", "mar", "apr", "may", "jun",

@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import {
   useCallback,
   useEffect,
@@ -32,11 +33,8 @@ import {
   getLabelInterval,
   getMinorTickInterval,
 } from "../lib/timeline/geometry";
-import AddItemForm from "./AddItemForm";
 import TimelineControls from "./TimelineControls";
 import TimelineItemVisual from "./TimelineItemVisual";
-import TimelineItemList from "./TimelineItemList";
-import TagFilterPanel from "./TagFilterPanel";
 import { useTimelineTags } from "./useTimelineTags";
 import { useEscapeLayer } from "./useEscapeLayer";
 import {
@@ -73,6 +71,19 @@ import {
   importTimelineCsv,
   mergeTimelineCategoryItems,
 } from "../lib/timeline/dataExchange";
+
+const AddItemForm = dynamic(() => import("./AddItemForm"), {
+  ssr: false,
+  loading: () => null,
+});
+const TimelineItemList = dynamic(() => import("./TimelineItemList"), {
+  ssr: false,
+  loading: () => null,
+});
+const TagFilterPanel = dynamic(() => import("./TagFilterPanel"), {
+  ssr: false,
+  loading: () => null,
+});
 
 // ─────────────────────────────────────
 // TIMELINE COMPONENT
