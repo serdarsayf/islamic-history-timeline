@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import { useState } from "react";
 import type { ChangeEvent, Dispatch, SetStateAction } from "react";
 import { dateToNumber, getYearLabel } from "../lib/timeline";
@@ -39,7 +39,7 @@ const buttonStyle = {
   fontWeight: 600,
 };
 
-export default function TimelineControls({
+function TimelineControlsImpl({
   pixelsPerYear,
   calendarMode,
   editMode,
@@ -237,3 +237,5 @@ export default function TimelineControls({
     </div>
   );
 }
+
+export default memo(TimelineControlsImpl);

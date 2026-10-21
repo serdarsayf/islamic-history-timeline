@@ -19,6 +19,7 @@ import type {
   CalendarMode,
   ItemFormState,
   TimelineItem,
+  TimelineTag,
 } from "../lib/timeline/types";
 import { initialItemFormState } from "../lib/timeline/types";
 import {
@@ -249,16 +250,27 @@ export default function Timeline() {
 
   const [form, setForm] = useState<ItemFormState>(initialItemFormState);
 
-  function updateForm(patch: Partial<ItemFormState>) {
+  const updateForm = useCallback((patch: Partial<ItemFormState>) => {
     setDataError(null);
     setForm((current) => ({ ...current, ...patch }));
-  }
+  }, []);
 
   const [newTagName, setNewTagName] = useState("");
 
   const [newTagColor, setNewTagColor] = useState("#ef4444");
 
   const [dataError, setDataError] = useState<string | null>(null);
+
+  const closeDetails = useCallback(() => {
+    setSelectedItemId(null);
+    setShowMetaTags(false);
+  }, []);
+
+  const closeItemEditor = useCallback(() => {
+    setShowAddForm(false);
+    setEditingItemId(null);
+    setEditingFromList(false);
+  }, []);
 
   useEscapeLayer(selectedItemId !== null, closeDetails);
   useEscapeLayer(showMetaTags, () => setShowMetaTags(false));
@@ -353,9 +365,7 @@ export default function Timeline() {
   // HISTORICAL DATE → SCREEN POSITION
   // ─────────────────────────────────────
 
-  function getRelativePosition(
-    date: HistoricalDate
-  ) {
+  const getRelativePosition = useCallback((date: HistoricalDate) => {
     const historicalPosition =
       dateToNumber(date);
 
@@ -364,7 +374,7 @@ export default function Timeline() {
       pixelsPerYear *
       zoom
     );
-  }
+  }, [viewPosition, pixelsPerYear, zoom]);
 
   function renderYearLabel(year: number) {
     const [yearNumber, era] =
@@ -564,27 +574,16 @@ export default function Timeline() {
   // CLOSE DETAIL WINDOW
   // ─────────────────────────────────────
 
-  function closeDetails() {
-    setSelectedItemId(null);
-    setShowMetaTags(false);
-  }
-
-  function closeItemEditor() {
-    setShowAddForm(false);
-    setEditingItemId(null);
-    setEditingFromList(false);
-  }
-
-  function backToItemList() {
+  const backToItemList = useCallback(() => {
     closeItemEditor();
     setShowItemList(true);
-  }
+  }, [closeItemEditor]);
 
-  function resetItemForm() {
+  const resetItemForm = useCallback(() => {
     setForm(initialItemFormState);
-  }
+  }, []);
 
-  function startAddingItem() {
+  const startAddingItem = useCallback(() => {
     if (showAddForm) {
       closeItemEditor();
       return;
@@ -593,9 +592,9 @@ export default function Timeline() {
     resetItemForm();
     setEditingItemId(null);
     setShowAddForm(true);
-  }
+  }, [showAddForm, closeItemEditor, resetItemForm]);
 
-  function handleCreateTag() {
+  const handleCreateTag = useCallback(() => {
     const tag = createTimelineTag(tags, newTagName, newTagColor);
     if (!tag) return;
 
@@ -609,9 +608,9 @@ export default function Timeline() {
       ...(form.tags.length === 0 ? { color: newTagColor, textColor: newTagColor } : {}),
     });
     setNewTagName("");
-  }
+  }, [tags, newTagName, newTagColor, form, updateForm, setTags]);
 
-  function handleCreateTagFromMenu(nameValue: string, color: string) {
+  const handleCreateTagFromMenu = useCallback((nameValue: string, color: string) => {
     const tag = createTimelineTag(tags, nameValue, color);
     if (!tag) return false;
 
@@ -620,9 +619,9 @@ export default function Timeline() {
       tag,
     ]);
     return true;
-  }
+  }, [tags, setTags]);
 
-  function handleRenameTag(oldName: string, requestedName: string) {
+  const handleRenameTag = useCallback((oldName: string, requestedName: string) => {
     const newName = requestedName.trim();
     if (!newName || tags.some((tag) => tag.name === newName && tag.name !== oldName)) {
       return false;
@@ -645,18 +644,18 @@ export default function Timeline() {
       currentNames.map((name) => name === oldName ? newName : name)
     );
     return true;
-  }
+  }, [tags, setItems, setTags]);
 
-  function handleChangeTagColor(tagName: string, color: string) {
+  const handleChangeTagColor = useCallback((tagName: string, color: string) => {
     setTags((currentTags) => currentTags.map((tag) =>
       tag.name === tagName ? { ...tag, color } : tag
     ));
-  }
+  }, [setTags]);
 
-  function handleChangeTagItemPosition(
+  const handleChangeTagItemPosition = useCallback((
     tagName: string,
     position: "above" | "below" | null
-  ) {
+  ) => {
     const updatedAt = Math.max(
       Date.now(),
       ...tags.map((tag) => (tag.itemPositionUpdatedAt ?? 0) + 1)
@@ -673,9 +672,9 @@ export default function Timeline() {
       const itemPosition = getTagItemPosition(updatedTags, item.tags);
       return itemPosition ? { ...item, position: itemPosition } : item;
     }));
-  }
+  }, [tags, setItems, setTags]);
 
-  function handleDeleteTag(tagName: string) {
+  const handleDeleteTag = useCallback((tagName: string) => {
     setTags((currentTags) => deleteTimelineTag(currentTags, tagName));
     setItems((currentItems) => removeTagFromTimelineItems(currentItems, tagName));
     setForm((currentForm) => ({
@@ -685,24 +684,24 @@ export default function Timeline() {
     setActiveTagNames((currentNames) =>
       currentNames.filter((name) => name !== tagName)
     );
-  }
+  }, [setItems, setTags]);
 
-  function duplicateEditingItem() {
+  const duplicateEditingItem = useCallback(() => {
     if (editingItemId === null) return;
 
     setItems((currentItems) =>
       duplicateTimelineItem(currentItems, editingItemId)
     );
     closeItemEditor();
-  }
+  }, [editingItemId, closeItemEditor, setItems]);
 
-  function deleteEditingItem() {
+  const deleteEditingItem = useCallback(() => {
     if (editingItemId === null) return;
 
     setItems((currentItems) => deleteTimelineItem(currentItems, editingItemId));
     if (lineageItemId === editingItemId) setLineageItemId(null);
     closeItemEditor();
-  }
+  }, [editingItemId, lineageItemId, closeItemEditor, setItems]);
 
   // ─────────────────────────────────────
   // ZOOM
@@ -771,19 +770,19 @@ export default function Timeline() {
     setZoom(newZoom);
   }
 
-  function zoomBy(factor: number) {
+  const zoomBy = useCallback((factor: number) => {
     setZoom((currentZoom) =>
       Math.min(Math.max(currentZoom * factor, 0.25), 5)
     );
-  }
+  }, []);
 
-  function resetView() {
+  const resetView = useCallback(() => {
     setViewPosition(dateToNumber({ year: 800, era: "CE" }));
     setZoom(1);
     setVerticalOffset(0);
-  }
+  }, []);
 
-  function handleSearchSelect(item: TimelineItem) {
+  const handleSearchSelect = useCallback((item: TimelineItem) => {
     const searchLineageIds = lineageItemId === null
       ? null
       : getLineageIds(items, lineageItemId);
@@ -798,15 +797,18 @@ export default function Timeline() {
       setHighlightedItemId(null);
       highlightTimer.current = null;
     }, 2400);
-  }
+  }, [lineageItemId, items, pixelsPerYear, zoom]);
 
-  function toggleFullscreen() {
+  const toggleFullscreen = useCallback(() => {
     if (!document.fullscreenElement) {
       document.documentElement.requestFullscreen();
     } else {
       document.exitFullscreen();
     }
-  }
+  }, []);
+
+  const handleZoomIn = useCallback(() => zoomBy(1.25), [zoomBy]);
+  const handleZoomOut = useCallback(() => zoomBy(0.8), [zoomBy]);
 
   // ─────────────────────────────────────
   // START DRAGGING
@@ -944,9 +946,7 @@ export default function Timeline() {
   // ADD TIMELINE ITEM
   // ─────────────────────────────────────
 
-  function handleAddItem(
-    event: React.FormEvent
-  ) {
+  const handleAddItem = useCallback((event: React.FormEvent) => {
     event.preventDefault();
 
     const itemData = buildTimelineItemData(form);
@@ -970,10 +970,10 @@ export default function Timeline() {
 
     resetItemForm();
     setShowAddForm(false);
-  }
+  }, [form, tags, editingItemId, closeItemEditor, setItems, resetItemForm]);
 
 
-  function handleImport(file: File) {
+  const handleImport = useCallback((file: File) => {
     file.text()
       .then((csv) => {
         const imported = importTimelineCsv(csv);
@@ -989,9 +989,9 @@ export default function Timeline() {
             : "Could not import this CSV."
         );
       });
-  }
+  }, [setItems, setTags]);
 
-  function handleCategoryImport(file: File) {
+  const handleCategoryImport = useCallback((file: File) => {
     file.text()
       .then((json) => {
         const imported = importTimelineCategory(json);
@@ -1019,7 +1019,35 @@ export default function Timeline() {
             : "Could not import this category."
         );
       });
-  }
+  }, [setItems, setTags]);
+
+  const handleExportTimeline = useCallback(
+    () => downloadTimelineCsv(items, tags),
+    [items, tags]
+  );
+  const handleExportCategory = useCallback(
+    (category: TimelineTag) => downloadTimelineCategory(category, items, tags),
+    [items, tags]
+  );
+  const handleChangeTagMeta = useCallback((tagName: string, isMeta: boolean) => {
+    setTags((currentTags) => currentTags.map((tag) =>
+      tag.name === tagName ? { ...tag, isMeta } : tag
+    ));
+  }, [setTags]);
+  const handleMoveTag = useCallback((tagName: string, direction: -1 | 1) => {
+    setTags((currentTags) => moveTimelineTag(currentTags, tagName, direction));
+  }, [setTags]);
+  const handleSetTagParent = useCallback((tagName: string, parentName: string | null) => {
+    setTags((currentTags) => setTimelineTagParent(currentTags, tagName, parentName));
+  }, [setTags]);
+  const handleToggleTag = useCallback((tagName: string) => {
+    setActiveTagNames((currentTags) =>
+      currentTags.includes(tagName)
+        ? currentTags.filter((name) => name !== tagName)
+        : [...currentTags, tagName]
+    );
+  }, []);
+  const handleCloseTagPanel = useCallback(() => setShowTagPanel(false), []);
 
   // ─────────────────────────────────────
   // VISIBLE HISTORICAL RANGE
@@ -1105,49 +1133,54 @@ export default function Timeline() {
       lineageTeacherIds
     );
   }, [visibleItems, pixelsPerYear, lineageIds, lineageItemId, originalItemRows, lineageLinks, lineageTeacherIds]);
-  const lineageNodes = lineageIds
-    ? visibleItems
-        .filter((item) => lineageIds.has(item.id))
-        .map((item) => {
-          const row = lineageItemRows.get(item.id) ?? 0;
-          const x = getRelativePosition(item.startDate);
+  const lineageNodes = useMemo(
+    () => lineageIds
+      ? visibleItems
+          .filter((item) => lineageIds.has(item.id))
+          .map((item) => {
+            const row = lineageItemRows.get(item.id) ?? 0;
+            const x = getRelativePosition(item.startDate);
 
-          return {
-            item,
-            row,
-            x,
-            endX: item.endDate
-              ? x + Math.abs(getRelativePosition(item.endDate) - x)
-              : x,
-            y: getItemY(item, row, axisY, zoom),
-          };
-        })
-    : [];
-  const lineageRoutes = lineageIds
-    ? getLineageRoutes(
-        lineageNodes,
-        lineageLinks,
-        axisY,
-        zoom
-      )
-    : [];
+            return {
+              item,
+              row,
+              x,
+              endX: item.endDate
+                ? x + Math.abs(getRelativePosition(item.endDate) - x)
+                : x,
+              y: getItemY(item, row, axisY, zoom),
+            };
+          })
+      : [],
+    [visibleItems, lineageIds, lineageItemRows, getRelativePosition, axisY, zoom]
+  );
+  const lineageRoutes = useMemo(
+    () => lineageIds
+      ? getLineageRoutes(lineageNodes, lineageLinks, axisY, zoom)
+      : [],
+    [lineageIds, lineageNodes, lineageLinks, axisY, zoom]
+  );
   // Holding Shift flips the hover from the box's students to its teachers.
-  const hoveredLinkedIds = new Set(
-    lineageRoutes.flatMap((route) => {
+  const hoveredLinkedIds = useMemo(
+    () => new Set(lineageRoutes.flatMap((route) => {
       if (route.teacherId === hoveredLineageItemId && !shiftHeld) return [route.studentId];
       if (route.studentId === hoveredLineageItemId && shiftHeld) return [route.teacherId];
       return [];
-    })
+    })),
+    [lineageRoutes, hoveredLineageItemId, shiftHeld]
   );
-  const lineageBounds = lineageIds
-    ? getLineageBounds(
-        lineageNodes,
-        lineageRoutes,
-        16 * zoom,
-        zoom,
-        lineageNodes.find((node) => node.item.id === lineageItemId)?.y
-      )
-    : null;
+  const lineageBounds = useMemo(
+    () => lineageIds
+      ? getLineageBounds(
+          lineageNodes,
+          lineageRoutes,
+          16 * zoom,
+          zoom,
+          lineageNodes.find((node) => node.item.id === lineageItemId)?.y
+        )
+      : null,
+    [lineageIds, lineageNodes, lineageRoutes, zoom, lineageItemId]
+  );
   const routeRange = useMemo(
     () => lineageBounds
       ? {
@@ -1202,39 +1235,41 @@ export default function Timeline() {
       .sort((first, second) => first.title.localeCompare(second.title));
   }, [items, editingItemId]);
 
-  const ticks: number[] = [];
+  const ticks = useMemo(() => {
+    const result: number[] = [];
+    const firstTick = Math.floor(startVisibleYear / minorInterval) * minorInterval;
 
-  const firstTick =
-    Math.floor(
-      startVisibleYear /
-        minorInterval
-    ) * minorInterval;
+    for (let year = firstTick; year <= endVisibleYear; year += minorInterval) {
+      result.push(year);
+    }
 
-  for (
-    let year = firstTick;
-    year <= endVisibleYear;
-    year += minorInterval
-  ) {
-    ticks.push(year);
-  }
+    return result;
+  }, [startVisibleYear, minorInterval, endVisibleYear]);
 
   // ─────────────────────────────────────
   // SELECTED ITEM
   // ─────────────────────────────────────
 
-  const selectedItem =
-    visibleItems.find(
+  const selectedItem = useMemo(
+    () => visibleItems.find(
       (item) =>
         item.id ===
         selectedItemId
-    );
-
-  const tagByName = new Map(tags.map((tag) => [tag.name, tag]));
-  const selectedNormalTagNames = (selectedItem?.tags ?? []).filter(
-    (tagName) => !isMetaTag(tags, tagName)
+    ),
+    [visibleItems, selectedItemId]
   );
-  const selectedMetaTagNames = (selectedItem?.tags ?? []).filter(
-    (tagName) => isMetaTag(tags, tagName)
+
+  const tagByName = useMemo(
+    () => new Map(tags.map((tag) => [tag.name, tag])),
+    [tags]
+  );
+  const selectedNormalTagNames = useMemo(
+    () => (selectedItem?.tags ?? []).filter((tagName) => !isMetaTag(tags, tagName)),
+    [selectedItem, tags]
+  );
+  const selectedMetaTagNames = useMemo(
+    () => (selectedItem?.tags ?? []).filter((tagName) => isMetaTag(tags, tagName)),
+    [selectedItem, tags]
   );
 
   const selectedRow = selectedItem
@@ -2132,12 +2167,12 @@ export default function Timeline() {
         setPixelsPerYear={setPixelsPerYear}
         setCalendarMode={setCalendarMode}
         setEditMode={setEditMode}
-        onExport={() => downloadTimelineCsv(items, tags)}
+        onExport={handleExportTimeline}
         onImport={handleImport}
         showItemList={showItemList}
         setShowItemList={setShowItemList}
-        onZoomIn={() => zoomBy(1.25)}
-        onZoomOut={() => zoomBy(0.8)}
+        onZoomIn={handleZoomIn}
+        onZoomOut={handleZoomOut}
         onResetView={resetView}
         onToggleFullscreen={toggleFullscreen}
         items={items}
@@ -2174,36 +2209,18 @@ export default function Timeline() {
         <TagFilterPanel
           tags={tags}
           activeTagNames={activeTagNames}
-          onExportCategory={(category) =>
-            downloadTimelineCategory(category, items, tags)
-          }
+          onExportCategory={handleExportCategory}
           onImportCategory={handleCategoryImport}
           onCreateTag={handleCreateTagFromMenu}
           onRenameTag={handleRenameTag}
           onChangeTagColor={handleChangeTagColor}
-          onChangeTagMeta={(tagName, isMeta) =>
-            setTags((currentTags) => currentTags.map((tag) =>
-              tag.name === tagName ? { ...tag, isMeta } : tag
-            ))
-          }
+          onChangeTagMeta={handleChangeTagMeta}
           onChangeTagItemPosition={handleChangeTagItemPosition}
-          onMoveTag={(tagName, direction) =>
-            setTags((currentTags) => moveTimelineTag(currentTags, tagName, direction))
-          }
-          onSetTagParent={(tagName, parentName) =>
-            setTags((currentTags) =>
-              setTimelineTagParent(currentTags, tagName, parentName)
-            )
-          }
+          onMoveTag={handleMoveTag}
+          onSetTagParent={handleSetTagParent}
           onDeleteTag={handleDeleteTag}
-          onToggle={(tagName) =>
-            setActiveTagNames((currentTags) =>
-              currentTags.includes(tagName)
-                ? currentTags.filter((name) => name !== tagName)
-                : [...currentTags, tagName]
-            )
-          }
-          onClose={() => setShowTagPanel(false)}
+          onToggle={handleToggleTag}
+          onClose={handleCloseTagPanel}
         />
       )}
 

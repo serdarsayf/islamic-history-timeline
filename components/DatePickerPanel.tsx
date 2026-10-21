@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 const monthAbbreviations = [
   "jan", "feb", "mar", "apr", "may", "jun",
   "jul", "aug", "sep", "oct", "nov", "dec",
@@ -27,7 +29,7 @@ const fieldStyle = {
   fontSize: "14px",
 };
 
-export default function DatePickerPanel({
+function DatePickerPanelImpl({
   title,
   era,
   year,
@@ -95,3 +97,5 @@ export default function DatePickerPanel({
     </div>
   );
 }
+
+export default memo(DatePickerPanelImpl);

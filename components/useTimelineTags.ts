@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import { defaultTags, normalizeTimelineTags } from "../lib/timeline/tags";
 import type { TimelineTag } from "../lib/timeline/types";
 
@@ -87,7 +87,7 @@ function subscribe(onChange: () => void) {
 export function useTimelineTags() {
   const tags = useSyncExternalStore(subscribe, readTags, () => defaultTags);
 
-  function setTags(update: TimelineTag[] | ((tags: TimelineTag[]) => TimelineTag[])) {
+  const setTags = useCallback((update: TimelineTag[] | ((tags: TimelineTag[]) => TimelineTag[])) => {
     const nextTags = normalizeTimelineTags(
       typeof update === "function" ? update(tags) : update
     );
@@ -96,7 +96,7 @@ export function useTimelineTags() {
     cachedTags = nextTags;
     schedulePersist(serialized);
     window.dispatchEvent(new Event(updateEvent));
-  }
+  }, [tags]);
 
   return [tags, setTags] as const;
 }

@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { memo, useMemo, useRef } from "react";
 import { useState } from "react";
 import type { ChangeEvent } from "react";
 import type { TimelineTag } from "../lib/timeline/types";
@@ -22,7 +22,7 @@ type TagFilterPanelProps = {
   onClose: () => void;
 };
 
-export default function TagFilterPanel({
+function TagFilterPanelImpl({
   tags,
   activeTagNames,
   onExportCategory,
@@ -43,12 +43,52 @@ export default function TagFilterPanel({
   const [newTagColor, setNewTagColor] = useState("#94a3b8");
   const [settingsTagName, setSettingsTagName] = useState<string | null>(null);
   useEscapeLayer(settingsTagName !== null, () => setSettingsTagName(null));
-  const settingsTag = tags.find((tag) => tag.name === settingsTagName);
-  const settingsSiblings = settingsTag
-    ? tags.filter((tag) => tag.parentName === settingsTag.parentName)
-    : [];
-  const settingsSiblingIndex = settingsSiblings.findIndex(
-    (tag) => tag.name === settingsTag?.name
+  const settingsTag = useMemo(
+    () => tags.find((tag) => tag.name === settingsTagName),
+    [tags, settingsTagName]
+  );
+  const settingsSiblings = useMemo(
+    () => settingsTag
+      ? tags.filter((tag) => tag.parentName === settingsTag.parentName)
+      : [],
+    [tags, settingsTag]
+  );
+  const settingsSiblingIndex = useMemo(
+    () => settingsSiblings.findIndex((tag) => tag.name === settingsTag?.name),
+    [settingsSiblings, settingsTag]
+  );
+  const settingsBranchNames = useMemo(
+    () => settingsTag ? getTagBranchNames(tags, settingsTag.name) : [],
+    [tags, settingsTag]
+  );
+  const settingsParentOptions = useMemo(
+    () => settingsTag
+      ? tags.filter((tag) =>
+          tag.name !== settingsTag.name &&
+          !settingsBranchNames.includes(tag.name)
+        )
+      : [],
+    [tags, settingsTag, settingsBranchNames]
+  );
+  const settingsSubtagRows = useMemo(
+    () => settingsTag
+      ? tags
+          .filter((tag) => tag.name !== settingsTag.name)
+          .map((tag) => ({
+            tag,
+            wouldCreateCycle: getTagBranchNames(tags, tag.name).includes(settingsTag.name),
+            depth: getTagDepth(tags, tag.name),
+          }))
+      : [],
+    [tags, settingsTag]
+  );
+  const tagRows = useMemo(
+    () => tags.map((tag) => ({
+      tag,
+      active: activeTagNames.includes(tag.name),
+      rowIndent: Math.min(getTagDepth(tags, tag.name) * 12, 48),
+    })),
+    [tags, activeTagNames]
   );
   const showSettings = settingsTag !== undefined;
 
@@ -126,17 +166,13 @@ export default function TagFilterPanel({
               style={{ width: "100%", padding: "7px", border: "1px solid #cbd5e1", borderRadius: "4px", backgroundColor: "white", color: "#1e293b" }}
             >
               <option value="">None</option>
-              {tags.filter((tag) =>
-                tag.name !== settingsTag.name &&
-                !getTagBranchNames(tags, settingsTag.name).includes(tag.name)
-              ).map((tag) => <option key={tag.name} value={tag.name}>{tag.name}</option>)}
+              {settingsParentOptions.map((tag) => <option key={tag.name} value={tag.name}>{tag.name}</option>)}
             </select>
           </label>
           <fieldset style={{ display: "grid", gap: "6px", margin: 0, padding: "8px", border: "1px solid #dbe2e8", borderRadius: "4px" }}>
             <legend style={{ padding: "0 4px", color: "#334155", fontSize: "12px" }}>Subtags</legend>
-            {tags.filter((tag) => tag.name !== settingsTag.name).map((tag) => {
-              const wouldCreateCycle = getTagBranchNames(tags, tag.name).includes(settingsTag.name);
-              return <label key={tag.name} style={{ display: "flex", alignItems: "center", gap: "7px", paddingLeft: `${getTagDepth(tags, tag.name) * 12}px`, color: wouldCreateCycle ? "#94a3b8" : "#334155", fontSize: "12px" }}>
+            {settingsSubtagRows.map(({ tag, wouldCreateCycle, depth }) => {
+              return <label key={tag.name} style={{ display: "flex", alignItems: "center", gap: "7px", paddingLeft: `${depth * 12}px`, color: wouldCreateCycle ? "#94a3b8" : "#334155", fontSize: "12px" }}>
                 <input
                   type="checkbox"
                   checked={tag.parentName === settingsTag.name}
@@ -159,9 +195,7 @@ export default function TagFilterPanel({
         </div>
       ) : (
         <>
-          {tags.length === 0 ? <p style={{ margin: 0, color: "#64748b", fontSize: "13px" }}>No tags yet.</p> : tags.map((tag) => {
-            const active = activeTagNames.includes(tag.name);
-            const rowIndent = Math.min(getTagDepth(tags, tag.name) * 12, 48);
+          {tags.length === 0 ? <p style={{ margin: 0, color: "#64748b", fontSize: "13px" }}>No tags yet.</p> : tagRows.map(({ tag, active, rowIndent }) => {
             return <div key={tag.name} style={{ display: "flex", gap: "5px", marginBottom: "5px", marginLeft: `${rowIndent}px` }}>
               <button className="ui-chip" type="button" onClick={() => onToggle(tag.name)} style={{ display: "flex", alignItems: "flex-start", gap: "8px", flex: 1, minWidth: 0, padding: "8px", border: `1px solid ${tag.color}`, borderRadius: "4px", backgroundColor: active ? tag.color : "white", color: active ? "white" : "#334155", cursor: "pointer", textAlign: "left" }}><span style={{ width: "10px", height: "10px", flex: "0 0 auto", marginTop: "3px", borderRadius: "50%", backgroundColor: active ? "white" : tag.color }} /><span style={{ minWidth: 0, lineHeight: 1.35, overflowWrap: "anywhere" }}>{tag.name}</span></button>
               <button type="button" title={`Export ${tag.name} tag`} aria-label={`Export ${tag.name} tag`} onClick={() => onExportCategory(tag)} style={{ width: "34px", height: "34px", flex: "0 0 auto", border: "1px solid #cbd5e1", borderRadius: "4px", backgroundColor: "white", color: "#334155", cursor: "pointer", fontSize: "18px" }}>⇩</button>
@@ -188,3 +222,5 @@ export default function TagFilterPanel({
     </aside>
   );
 }
+
+export default memo(TagFilterPanelImpl);

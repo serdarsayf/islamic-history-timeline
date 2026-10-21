@@ -196,7 +196,7 @@ function measureItemRowHeights(button: HTMLButtonElement, items: TimelineItem[])
   return rowHeights;
 }
 
-export default function TimelineItemList({
+function TimelineItemListImpl({
   items,
   scrollTopRef,
   onSelect,
@@ -404,3 +404,5 @@ export default function TimelineItemList({
     </div>
   );
 }
+
+export default memo(TimelineItemListImpl);

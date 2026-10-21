@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import type { Dispatch, FormEvent, SetStateAction } from "react";
 import type { ItemFormState, TimelineTag } from "../lib/timeline/types";
 import { getTagDepth } from "../lib/timeline/tags";
@@ -85,7 +85,7 @@ const labelStyle = {
   fontSize: "13px",
 };
 
-export default function AddItemForm({
+function AddItemFormImpl({
   form,
   tagPositionPreference,
   teacherOptions,
@@ -115,11 +115,58 @@ export default function AddItemForm({
   useEscapeLayer(openDateField !== null, () => setOpenDateField(null));
 
   const normalizedTeacherQuery = teacherQuery.trim().toLocaleLowerCase();
-  const visibleTeacherOptions = normalizedTeacherQuery
-    ? teacherOptions.filter((option) =>
-        option.title.toLocaleLowerCase().includes(normalizedTeacherQuery)
-      )
-    : teacherOptions;
+  const visibleTeacherOptions = useMemo(
+    () => normalizedTeacherQuery
+      ? teacherOptions.filter((option) =>
+          option.title.toLocaleLowerCase().includes(normalizedTeacherQuery)
+        )
+      : teacherOptions,
+    [teacherOptions, normalizedTeacherQuery]
+  );
+  const availableTagByName = useMemo(
+    () => new Map(availableTags.map((tag) => [tag.name, tag])),
+    [availableTags]
+  );
+  const availableTagRows = useMemo(
+    () => availableTags.map((tag) => ({
+      tag,
+      depth: getTagDepth(availableTags, tag.name),
+    })),
+    [availableTags]
+  );
+  const closeDatePicker = useCallback(() => setOpenDateField(null), []);
+  const handleStartEraChange = useCallback(
+    (era: "BC" | "CE") => onChange({ startEra: era }),
+    [onChange]
+  );
+  const handleStartYearChange = useCallback((value: string) => {
+    onChange({ startYear: value });
+    setStartDateText(formatDateText(value, form.startMonth, form.startDay));
+  }, [onChange, form.startMonth, form.startDay]);
+  const handleStartMonthChange = useCallback((value: string) => {
+    onChange({ startMonth: value });
+    setStartDateText(formatDateText(form.startYear, value, form.startDay));
+  }, [onChange, form.startYear, form.startDay]);
+  const handleStartDayChange = useCallback((value: string) => {
+    onChange({ startDay: value });
+    setStartDateText(formatDateText(form.startYear, form.startMonth, value));
+  }, [onChange, form.startYear, form.startMonth]);
+  const handleEndEraChange = useCallback(
+    (era: "BC" | "CE") => onChange({ endEra: era }),
+    [onChange]
+  );
+  const handleEndYearChange = useCallback((value: string) => {
+    onChange({ endYear: value });
+    setEndDateText(formatDateText(value, form.endMonth, form.endDay));
+  }, [onChange, form.endMonth, form.endDay]);
+  const handleEndMonthChange = useCallback((value: string) => {
+    onChange({ endMonth: value });
+    setEndDateText(formatDateText(form.endYear, value, form.endDay));
+  }, [onChange, form.endYear, form.endDay]);
+  const handleEndDayChange = useCallback((value: string) => {
+    onChange({ endDay: value });
+    setEndDateText(formatDateText(form.endYear, form.endMonth, value));
+  }, [onChange, form.endYear, form.endMonth]);
 
   return (
     <>
@@ -210,7 +257,7 @@ export default function AddItemForm({
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: "5px", marginTop: "6px" }}>
             {form.tags.map((tagName) => {
-              const tag = availableTags.find((candidate) => candidate.name === tagName);
+              const tag = availableTagByName.get(tagName);
               return (
                 <span
                   key={tagName}
@@ -240,7 +287,7 @@ export default function AddItemForm({
             <button type="button" onClick={onCreateTag} style={{ padding: "7px 9px", border: "1px solid #cbd5e1", borderRadius: "4px", backgroundColor: "white", cursor: "pointer" }}>Add</button>
           </div>}
           {showTagPicker && <div style={{ display: "flex", flexDirection: "column", gap: "5px", marginTop: "7px", padding: "8px", border: "1px solid #e2e8f0", borderRadius: "4px", backgroundColor: "white" }}>
-            {availableTags.length === 0 ? <span style={{ color: "#64748b", fontSize: "12px" }}>No tags created yet.</span> : availableTags.map((tag) => {
+            {availableTags.length === 0 ? <span style={{ color: "#64748b", fontSize: "12px" }}>No tags created yet.</span> : availableTagRows.map(({ tag, depth }) => {
               const isSelected = form.tags.includes(tag.name);
               return (
                 <button
@@ -252,7 +299,7 @@ export default function AddItemForm({
                     // Adopt the first tag's color as the item's box and text color.
                     ...(!isSelected && form.tags.length === 0 ? { color: tag.color, textColor: tag.color } : {}),
                   })}
-                  style={{ padding: `6px 8px 6px ${6 + getTagDepth(availableTags, tag.name)}px`, border: `1px solid ${tag.color}`, borderRadius: "4px", backgroundColor: isSelected ? tag.color : "white", color: isSelected ? "white" : "#334155", cursor: "pointer", textAlign: "left" }}
+                  style={{ padding: `6px 8px 6px ${6 + depth}px`, border: `1px solid ${tag.color}`, borderRadius: "4px", backgroundColor: isSelected ? tag.color : "white", color: isSelected ? "white" : "#334155", cursor: "pointer", textAlign: "left" }}
                 >
                   {tag.name}
                 </button>
@@ -418,11 +465,11 @@ export default function AddItemForm({
         year={form.startYear}
         month={form.startMonth}
         day={form.startDay}
-        onChangeEra={(era) => onChange({ startEra: era })}
-        onChangeYear={(value) => { onChange({ startYear: value }); setStartDateText(formatDateText(value, form.startMonth, form.startDay)); }}
-        onChangeMonth={(value) => { onChange({ startMonth: value }); setStartDateText(formatDateText(form.startYear, value, form.startDay)); }}
-        onChangeDay={(value) => { onChange({ startDay: value }); setStartDateText(formatDateText(form.startYear, form.startMonth, value)); }}
-        onClose={() => setOpenDateField(null)}
+        onChangeEra={handleStartEraChange}
+        onChangeYear={handleStartYearChange}
+        onChangeMonth={handleStartMonthChange}
+        onChangeDay={handleStartDayChange}
+        onClose={closeDatePicker}
       />
     )}
 
@@ -433,14 +480,16 @@ export default function AddItemForm({
         year={form.endYear}
         month={form.endMonth}
         day={form.endDay}
-        onChangeEra={(era) => onChange({ endEra: era })}
-        onChangeYear={(value) => { onChange({ endYear: value }); setEndDateText(formatDateText(value, form.endMonth, form.endDay)); }}
-        onChangeMonth={(value) => { onChange({ endMonth: value }); setEndDateText(formatDateText(form.endYear, value, form.endDay)); }}
-        onChangeDay={(value) => { onChange({ endDay: value }); setEndDateText(formatDateText(form.endYear, form.endMonth, value)); }}
-        onClose={() => setOpenDateField(null)}
+        onChangeEra={handleEndEraChange}
+        onChangeYear={handleEndYearChange}
+        onChangeMonth={handleEndMonthChange}
+        onChangeDay={handleEndDayChange}
+        onClose={closeDatePicker}
       />
     )}
     </>
   );
 }
+
+export default memo(AddItemFormImpl);
 
