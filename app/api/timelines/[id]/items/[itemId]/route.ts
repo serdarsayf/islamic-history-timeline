@@ -15,7 +15,7 @@ export async function PATCH(request: Request, context: Context) {
 
   const { data: timeline } = await supabase.from("timelines").select("id").eq("id", id).eq("owner_id", user.id).maybeSingle();
   if (!timeline) return NextResponse.json({ error: "Timeline not found." }, { status: 404 });
-  const { data: existing, error: readError } = await supabase.from("timeline_items").select("*").eq("id", itemId).eq("timeline_id", id).single();
+  const { data: existing, error: readError } = await supabase.from("timeline_items").select("type, start_year, start_era, end_year, end_era").eq("id", itemId).eq("timeline_id", id).single();
   if (readError || !existing) return NextResponse.json({ error: "Item not found." }, { status: 404 });
 
   const updates: Record<string, unknown> = {};
