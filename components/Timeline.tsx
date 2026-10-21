@@ -121,34 +121,45 @@ function useRafThrottle(callback: (clientX: number, clientY: number) => void) {
   return { schedule, cancel };
 }
 
-let cachedItemRowLayoutKey: string | null = null;
+let cachedItemRowInputs: {
+  id: number;
+  type: TimelineItem["type"];
+  titleLength: number;
+  start: number;
+  end: number | null;
+  position: TimelineItem["position"];
+}[] | null = null;
 let cachedItemRowPixelsPerYear: number | null = null;
 let cachedOriginalItemRows: Map<number, number> | null = null;
 
-function getItemRowLayoutKey(items: TimelineItem[]) {
-  return items.map((item) => [
-    item.id,
-    item.type,
-    item.title.length,
-    dateToNumber(item.startDate),
-    item.endDate ? dateToNumber(item.endDate) : "",
-    item.position,
-  ].join(",")).join(";");
-}
-
 function getOriginalItemRows(
   items: TimelineItem[],
-  pixelsPerYear: number,
-  layoutKey: string
+  pixelsPerYear: number
 ) {
-  if (
-    cachedOriginalItemRows &&
-    cachedItemRowPixelsPerYear === pixelsPerYear &&
-    cachedItemRowLayoutKey === layoutKey
-  ) return cachedOriginalItemRows;
+  if (cachedOriginalItemRows && cachedItemRowPixelsPerYear === pixelsPerYear && cachedItemRowInputs) {
+    let matches = cachedItemRowInputs.length === items.length;
+    for (let index = 0; matches && index < items.length; index += 1) {
+      const item = items[index];
+      const input = cachedItemRowInputs[index];
+      matches = input.id === item.id &&
+        input.type === item.type &&
+        input.titleLength === item.title.length &&
+        input.start === dateToNumber(item.startDate) &&
+        input.end === (item.endDate ? dateToNumber(item.endDate) : null) &&
+        input.position === item.position;
+    }
+    if (matches) return cachedOriginalItemRows;
+  }
 
   cachedItemRowPixelsPerYear = pixelsPerYear;
-  cachedItemRowLayoutKey = layoutKey;
+  cachedItemRowInputs = items.map((item) => ({
+    id: item.id,
+    type: item.type,
+    titleLength: item.title.length,
+    start: dateToNumber(item.startDate),
+    end: item.endDate ? dateToNumber(item.endDate) : null,
+    position: item.position,
+  }));
   cachedOriginalItemRows = getItemRows(items, pixelsPerYear);
   return cachedOriginalItemRows;
 }
@@ -1158,14 +1169,9 @@ export default function Timeline() {
     [visibleItems, startVisibleYear, endVisibleYear]
   );
 
-  const itemRowLayoutKey = useMemo(
-    () => getItemRowLayoutKey(visibleItems),
-    [visibleItems]
-  );
   const originalItemRows = getOriginalItemRows(
     visibleItems,
-    pixelsPerYear,
-    itemRowLayoutKey
+    pixelsPerYear
   );
   const lineageIds = useMemo(
     () => lineageItemId === null
@@ -1264,8 +1270,10 @@ export default function Timeline() {
   );
   const clearThroughRows = useMemo(() => {
     const rows = { above: clearanceRows.above, below: clearanceRows.below };
+    if (!lineageIds) return rows;
+
     visibleItems.forEach((item) => {
-      if (!lineageIds?.has(item.id)) return;
+      if (!lineageIds.has(item.id)) return;
       const row = lineageItemRows.get(item.id) ?? 0;
       const band = rows[item.position];
       rows[item.position] = band
@@ -1290,15 +1298,37 @@ export default function Timeline() {
     [visibleItems, pixelsPerYear, originalItemRows, lineageItemRows, lineageIds, routeRange, clearThroughRows, lineageTeacherIds]
   );
 
+  const teacherOptionsCache = useRef<{
+    editingItemId: number | null;
+    inputs: { id: number; title: string; teacherIds?: number[] }[];
+    options: { id: number; title: string }[];
+  } | null>(null);
   const teacherOptions = useMemo(() => {
+    const cached = teacherOptionsCache.current;
+    const inputsMatch = cached?.editingItemId === editingItemId &&
+      cached.inputs.length === items.length &&
+      cached.inputs.every((input, index) => {
+        const item = items[index];
+        return input.id === item.id &&
+          input.title === item.title &&
+          input.teacherIds === item.teacherIds;
+      });
+    if (inputsMatch && cached) return cached.options;
+
     const descendantIds = editingItemId === null
       ? new Set<number>()
       : getDescendantIds(items, editingItemId);
 
-    return items
+    const options = items
       .filter((item) => item.id !== editingItemId && !descendantIds.has(item.id))
       .map(({ id, title }) => ({ id, title }))
       .sort((first, second) => first.title.localeCompare(second.title));
+    teacherOptionsCache.current = {
+      editingItemId,
+      inputs: items.map(({ id, title, teacherIds }) => ({ id, title, teacherIds })),
+      options,
+    };
+    return options;
   }, [items, editingItemId]);
 
   const ticks = useMemo(() => {
@@ -1317,11 +1347,9 @@ export default function Timeline() {
   // ─────────────────────────────────────
 
   const selectedItem = useMemo(
-    () => visibleItems.find(
-      (item) =>
-        item.id ===
-        selectedItemId
-    ),
+    () => selectedItemId === null
+      ? undefined
+      : visibleItems.find((item) => item.id === selectedItemId),
     [visibleItems, selectedItemId]
   );
 
