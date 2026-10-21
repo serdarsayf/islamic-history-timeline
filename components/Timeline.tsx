@@ -281,15 +281,18 @@ export default function Timeline() {
 
   const detailRef = useRef<HTMLDivElement>(null);
   const [detailHeight, setDetailHeight] = useState(320);
+  const { schedule: scheduleDetailHeight } = useRafThrottle((height) => {
+    setDetailHeight(height);
+  });
 
   useEffect(() => {
     const element = detailRef.current;
     if (!element) return;
 
-    const observer = new ResizeObserver(() => setDetailHeight(element.offsetHeight));
+    const observer = new ResizeObserver(() => scheduleDetailHeight(element.offsetHeight, 0));
     observer.observe(element);
     return () => observer.disconnect();
-  }, [selectedItemId]);
+  }, [selectedItemId, scheduleDetailHeight]);
 
   // ─────────────────────────────────────
   // SCREEN DIMENSIONS
@@ -300,13 +303,13 @@ export default function Timeline() {
       width: 1200,
       height: 800,
     });
+  const { schedule: scheduleViewportSize } = useRafThrottle((width, height) => {
+    setViewportSize({ width, height });
+  });
 
   useEffect(() => {
     function updateViewportSize() {
-      setViewportSize({
-        width: window.innerWidth,
-        height: window.innerHeight,
-      });
+      scheduleViewportSize(window.innerWidth, window.innerHeight);
     }
 
     updateViewportSize();
@@ -321,7 +324,7 @@ export default function Timeline() {
         updateViewportSize
       );
     };
-  }, []);
+  }, [scheduleViewportSize]);
 
   const viewportWidth =
     viewportSize.width;
@@ -847,6 +850,7 @@ export default function Timeline() {
   // ─────────────────────────────────────
 
   function applyPointerMove(clientX: number, clientY: number) {
+    setPointerX(clientX);
     if (!isDragging) {
       return;
     }
@@ -895,12 +899,26 @@ export default function Timeline() {
   const { schedule: schedulePointerMove, cancel: cancelScheduledPointerMove } =
     useRafThrottle(applyPointerMove);
 
+  useEffect(() => {
+    const stopDraggingOnBlur = () => {
+      cancelScheduledPointerMove();
+      setIsDragging(false);
+    };
+
+    window.addEventListener("blur", stopDraggingOnBlur);
+    return () => window.removeEventListener("blur", stopDraggingOnBlur);
+  }, [cancelScheduledPointerMove]);
+
   function handlePointerMove(
     event: React.PointerEvent<HTMLDivElement>
   ) {
     const { clientX, clientY } = event;
-    setPointerX(clientX);
     schedulePointerMove(clientX, clientY);
+  }
+
+  function handlePointerLeave() {
+    cancelScheduledPointerMove();
+    setPointerX(null);
   }
 
   // ─────────────────────────────────────
@@ -1405,9 +1423,7 @@ export default function Timeline() {
           handlePointerDown
         }
         onPointerMove={handlePointerMove}
-        onPointerLeave={() =>
-          setPointerX(null)
-        }
+        onPointerLeave={handlePointerLeave}
         onPointerUp={
           handlePointerUp
         }

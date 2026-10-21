@@ -147,6 +147,34 @@ function getRowLayouts(
   return { rows, totalHeight };
 }
 
+function useRafThrottle<Args extends unknown[]>(callback: (...args: Args) => void) {
+  const callbackRef = useRef(callback);
+  const frameRef = useRef<number | null>(null);
+  const latestArgsRef = useRef<Args | null>(null);
+
+  useEffect(() => {
+    callbackRef.current = callback;
+  }, [callback]);
+
+  const schedule = useCallback((...args: Args) => {
+    latestArgsRef.current = args;
+    if (frameRef.current !== null) return;
+
+    frameRef.current = requestAnimationFrame(() => {
+      frameRef.current = null;
+      const latestArgs = latestArgsRef.current;
+      latestArgsRef.current = null;
+      if (latestArgs) callbackRef.current(...latestArgs);
+    });
+  }, []);
+
+  useEffect(() => () => {
+    if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+  }, []);
+
+  return schedule;
+}
+
 function measureItemRowHeights(button: HTMLButtonElement, items: TimelineItem[]) {
   const measurementRoot = document.createElement("div");
   measurementRoot.style.position = "fixed";
@@ -240,6 +268,24 @@ function TimelineItemListImpl({
     return spacer.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop;
   }, []);
 
+  const applyListMetrics = useCallback((
+    scrollTop: number,
+    viewportHeight: number,
+    rowsOffset: number,
+    width: number
+  ) => {
+    setListMetrics((current) => {
+      if (
+        current.scrollTop === scrollTop &&
+        current.viewportHeight === viewportHeight &&
+        current.rowsOffset === rowsOffset &&
+        current.width === width
+      ) return current;
+      return { scrollTop, viewportHeight, rowsOffset, width };
+    });
+  }, []);
+  const scheduleListMetrics = useRafThrottle(applyListMetrics);
+
   const setListElement = useCallback((element: HTMLDivElement | null) => {
     listRef.current = element;
     if (element && element.scrollTop !== scrollTopRef.current) {
@@ -258,21 +304,8 @@ function TimelineItemListImpl({
     }
     listWidthRef.current = width;
     const rowsOffset = getRowsOffset();
-    setListMetrics((current) => {
-      if (
-        current.scrollTop === list.scrollTop &&
-        current.viewportHeight === list.clientHeight &&
-        current.rowsOffset === rowsOffset &&
-        current.width === width
-      ) return current;
-      return {
-        scrollTop: list.scrollTop,
-        viewportHeight: list.clientHeight,
-        rowsOffset,
-        width,
-      };
-    });
-  }, [getRowsOffset]);
+    scheduleListMetrics(list.scrollTop, list.clientHeight, rowsOffset, width);
+  }, [getRowsOffset, scheduleListMetrics]);
 
   useEffect(() => {
     const list = listRef.current;
@@ -302,23 +335,18 @@ function TimelineItemListImpl({
     if (list && top + currentHeight <= list.scrollTop - getRowsOffset()) {
       list.scrollTop += height - currentHeight;
       scrollTopRef.current = list.scrollTop;
-      setListMetrics((current) => ({ ...current, scrollTop: list.scrollTop }));
+      scheduleListMetrics(list.scrollTop, list.clientHeight, getRowsOffset(), list.clientWidth);
     }
 
     rowHeightsRef.current = { ...rowHeightsRef.current, [itemId]: height };
     setRowHeights(rowHeightsRef.current);
-  }, [getRowsOffset, scrollTopRef]);
+  }, [getRowsOffset, scheduleListMetrics, scrollTopRef]);
 
   const handleScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
     const list = event.currentTarget;
     scrollTopRef.current = list.scrollTop;
-    setListMetrics({
-      scrollTop: list.scrollTop,
-      viewportHeight: list.clientHeight,
-      rowsOffset: getRowsOffset(),
-      width: list.clientWidth,
-    });
-  }, [getRowsOffset, scrollTopRef]);
+    scheduleListMetrics(list.scrollTop, list.clientHeight, getRowsOffset(), list.clientWidth);
+  }, [getRowsOffset, scheduleListMetrics, scrollTopRef]);
 
   return (
     <div
