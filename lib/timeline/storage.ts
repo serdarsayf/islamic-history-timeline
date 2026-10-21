@@ -8,7 +8,7 @@ const storageEvent = "timeline-items-updated";
 let cachedRaw: string | null = null;
 let cachedItems: TimelineItem[] | null = null;
 let writeTimer: ReturnType<typeof setTimeout> | null = null;
-let pendingRaw: string | null = null;
+let pendingItems: TimelineItem[] | null = null;
 let unloadHandler: (() => void) | null = null;
 
 function removeUnloadHandler() {
@@ -20,11 +20,11 @@ function removeUnloadHandler() {
 function flushPendingWrite() {
   if (writeTimer !== null) clearTimeout(writeTimer);
   writeTimer = null;
-  const toWrite = pendingRaw;
-  pendingRaw = null;
+  const toWrite = pendingItems;
+  pendingItems = null;
   if (toWrite !== null) {
     try {
-      window.localStorage.setItem(storageKey, toWrite);
+      window.localStorage.setItem(storageKey, JSON.stringify(toWrite));
       cachedRaw = null;
     } catch {
       // Ignore quota or storage failures.
@@ -33,24 +33,23 @@ function flushPendingWrite() {
   removeUnloadHandler();
 }
 
-function schedulePersist(raw: string) {
-  pendingRaw = raw;
-  if (writeTimer === null) {
-    writeTimer = setTimeout(() => {
-      writeTimer = null;
-      const toWrite = pendingRaw;
-      pendingRaw = null;
-      if (toWrite !== null) {
-        try {
-          window.localStorage.setItem(storageKey, toWrite);
-          cachedRaw = null;
-        } catch {
-          // Ignore quota or storage failures.
-        }
+function schedulePersist(items: TimelineItem[]) {
+  pendingItems = items;
+  if (writeTimer !== null) clearTimeout(writeTimer);
+  writeTimer = setTimeout(() => {
+    writeTimer = null;
+    const toWrite = pendingItems;
+    pendingItems = null;
+    if (toWrite !== null) {
+      try {
+        window.localStorage.setItem(storageKey, JSON.stringify(toWrite));
+        cachedRaw = null;
+      } catch {
+        // Ignore quota or storage failures.
       }
-      removeUnloadHandler();
-    }, 150);
-  }
+    }
+    removeUnloadHandler();
+  }, 150);
 
   if (unloadHandler === null) {
     unloadHandler = flushPendingWrite;
@@ -163,7 +162,7 @@ export function parseStoredItems(stored: string | null, fallback: TimelineItem[]
 
 export function readStoredItems(fallback: TimelineItem[]) {
   if (typeof window === "undefined") return fallback;
-  if (pendingRaw !== null && cachedItems !== null) return cachedItems;
+  if (pendingItems !== null && cachedItems !== null) return cachedItems;
 
   try {
     const stored = window.localStorage.getItem(storageKey);
@@ -183,17 +182,16 @@ export function readStoredItems(fallback: TimelineItem[]) {
 }
 
 export function writeStoredItems(items: TimelineItem[]) {
-  const serialized = JSON.stringify(items);
-  cachedRaw = serialized;
+  cachedRaw = null;
   cachedItems = items;
-  schedulePersist(serialized);
+  schedulePersist(items);
   window.dispatchEvent(new Event(storageEvent));
 }
 
 export function subscribeToStoredItems(onChange: () => void) {
   const handleStorage = (event: StorageEvent) => {
     if (event.key === storageKey) {
-      if (pendingRaw === null) {
+      if (pendingItems === null) {
         cachedRaw = null;
         cachedItems = null;
       }

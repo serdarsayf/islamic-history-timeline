@@ -7,7 +7,7 @@ const updateEvent = "timeline-tags-updated";
 let cachedRaw: string | null = null;
 let cachedTags: TimelineTag[] | null = null;
 let writeTimer: ReturnType<typeof setTimeout> | null = null;
-let pendingRaw: string | null = null;
+let pendingTags: TimelineTag[] | null = null;
 let unloadHandler: (() => void) | null = null;
 
 function removeUnloadHandler() {
@@ -19,11 +19,11 @@ function removeUnloadHandler() {
 function flushPendingWrite() {
   if (writeTimer !== null) clearTimeout(writeTimer);
   writeTimer = null;
-  const toWrite = pendingRaw;
-  pendingRaw = null;
+  const toWrite = pendingTags;
+  pendingTags = null;
   if (toWrite !== null) {
     try {
-      window.localStorage.setItem(storageKey, toWrite);
+      window.localStorage.setItem(storageKey, JSON.stringify(toWrite));
       cachedRaw = null;
     } catch {
       // Ignore quota or storage failures.
@@ -32,24 +32,23 @@ function flushPendingWrite() {
   removeUnloadHandler();
 }
 
-function schedulePersist(raw: string) {
-  pendingRaw = raw;
-  if (writeTimer === null) {
-    writeTimer = setTimeout(() => {
-      writeTimer = null;
-      const toWrite = pendingRaw;
-      pendingRaw = null;
-      if (toWrite !== null) {
-        try {
-          window.localStorage.setItem(storageKey, toWrite);
-          cachedRaw = null;
-        } catch {
-          // Ignore quota or storage failures.
-        }
+function schedulePersist(tags: TimelineTag[]) {
+  pendingTags = tags;
+  if (writeTimer !== null) clearTimeout(writeTimer);
+  writeTimer = setTimeout(() => {
+    writeTimer = null;
+    const toWrite = pendingTags;
+    pendingTags = null;
+    if (toWrite !== null) {
+      try {
+        window.localStorage.setItem(storageKey, JSON.stringify(toWrite));
+        cachedRaw = null;
+      } catch {
+        // Ignore quota or storage failures.
       }
-      removeUnloadHandler();
-    }, 150);
-  }
+    }
+    removeUnloadHandler();
+  }, 150);
 
   if (unloadHandler === null) {
     unloadHandler = flushPendingWrite;
@@ -58,7 +57,7 @@ function schedulePersist(raw: string) {
 }
 
 function readTags() {
-  if (pendingRaw !== null && cachedTags !== null) return cachedTags;
+  if (pendingTags !== null && cachedTags !== null) return cachedTags;
   try {
     const stored = window.localStorage.getItem(storageKey);
     if (stored === cachedRaw && cachedTags) return cachedTags;
@@ -79,7 +78,7 @@ function readTags() {
 function subscribe(onChange: () => void) {
   const handleStorage = (event: StorageEvent) => {
     if (event.key === storageKey) {
-      if (pendingRaw === null) {
+      if (pendingTags === null) {
         cachedRaw = null;
         cachedTags = null;
       }
@@ -105,10 +104,9 @@ export function useTimelineTags() {
     const nextTags = normalizeTimelineTags(
       typeof update === "function" ? update(tags) : update
     );
-    const serialized = JSON.stringify(nextTags);
-    cachedRaw = serialized;
+    cachedRaw = null;
     cachedTags = nextTags;
-    schedulePersist(serialized);
+    schedulePersist(nextTags);
     window.dispatchEvent(new Event(updateEvent));
   }, [tags]);
 
