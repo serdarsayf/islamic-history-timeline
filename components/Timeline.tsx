@@ -121,6 +121,38 @@ function useRafThrottle(callback: (clientX: number, clientY: number) => void) {
   return { schedule, cancel };
 }
 
+let cachedItemRowLayoutKey: string | null = null;
+let cachedItemRowPixelsPerYear: number | null = null;
+let cachedOriginalItemRows: Map<number, number> | null = null;
+
+function getItemRowLayoutKey(items: TimelineItem[]) {
+  return items.map((item) => [
+    item.id,
+    item.type,
+    item.title.length,
+    dateToNumber(item.startDate),
+    item.endDate ? dateToNumber(item.endDate) : "",
+    item.position,
+  ].join(",")).join(";");
+}
+
+function getOriginalItemRows(
+  items: TimelineItem[],
+  pixelsPerYear: number,
+  layoutKey: string
+) {
+  if (
+    cachedOriginalItemRows &&
+    cachedItemRowPixelsPerYear === pixelsPerYear &&
+    cachedItemRowLayoutKey === layoutKey
+  ) return cachedOriginalItemRows;
+
+  cachedItemRowPixelsPerYear = pixelsPerYear;
+  cachedItemRowLayoutKey = layoutKey;
+  cachedOriginalItemRows = getItemRows(items, pixelsPerYear);
+  return cachedOriginalItemRows;
+}
+
 export default function Timeline() {
   // ─────────────────────────────────────
   // TIMELINE DATA
@@ -1126,9 +1158,14 @@ export default function Timeline() {
     [visibleItems, startVisibleYear, endVisibleYear]
   );
 
-  const originalItemRows = useMemo(
-    () => getItemRows(visibleItems, pixelsPerYear),
-    [visibleItems, pixelsPerYear]
+  const itemRowLayoutKey = useMemo(
+    () => getItemRowLayoutKey(visibleItems),
+    [visibleItems]
+  );
+  const originalItemRows = getOriginalItemRows(
+    visibleItems,
+    pixelsPerYear,
+    itemRowLayoutKey
   );
   const lineageIds = useMemo(
     () => lineageItemId === null
