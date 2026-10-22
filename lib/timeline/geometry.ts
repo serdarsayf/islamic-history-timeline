@@ -319,25 +319,53 @@ function buildLineageModel(
 
   const incident = new Map<number, number[]>();
   infos.forEach(({ teacherId, studentId }, index) => {
-    [teacherId, studentId].forEach((id) => {
-      incident.set(id, [...(incident.get(id) ?? []), index]);
-    });
+    const teacherLinks = incident.get(teacherId);
+    if (teacherLinks) teacherLinks.push(index);
+    else incident.set(teacherId, [index]);
+
+    const studentLinks = incident.get(studentId);
+    if (studentLinks) studentLinks.push(index);
+    else incident.set(studentId, [index]);
   });
 
   const threshold = CROWD_DISTANCE / pixelsPerYear;
-  // Links sharing a box may merge freely, so only unrelated ones can crowd each other.
-  const near = infos.map((first, firstIndex) =>
-    infos.flatMap((second, secondIndex) => {
+  const linksByX = infos
+    .map((info, index) => ({ index, x: info.x }))
+    .sort((first, second) => first.x - second.x || first.index - second.index);
+  const firstNearX = (x: number) => {
+    let low = 0;
+    let high = linksByX.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (linksByX[middle].x < x) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  };
+
+  // Only links within the horizontal crowding threshold can interact.
+  const near = infos.map((first, firstIndex) => {
+    const neighbors: { index: number; weight: number }[] = [];
+    for (
+      let candidate = firstNearX(first.x - threshold);
+      candidate < linksByX.length && linksByX[candidate].x - first.x < threshold;
+      candidate += 1
+    ) {
+      const secondIndex = linksByX[candidate].index;
+      if (firstIndex === secondIndex) continue;
+      const second = infos[secondIndex];
+      const distance = Math.abs(first.x - second.x);
       const related = first.teacherId === second.teacherId ||
         first.teacherId === second.studentId ||
         first.studentId === second.teacherId ||
         first.studentId === second.studentId;
-      const distance = Math.abs(first.x - second.x);
-      return firstIndex === secondIndex || related || distance >= threshold
-        ? []
-        : [{ index: secondIndex, weight: 1 - distance / threshold }];
-    })
-  );
+      if (!related && distance < threshold) {
+        neighbors.push({ index: secondIndex, weight: 1 - distance / threshold });
+      }
+    }
+    neighbors.sort((firstNeighbor, secondNeighbor) => firstNeighbor.index - secondNeighbor.index);
+    return neighbors;
+  });
 
   return {
     members,

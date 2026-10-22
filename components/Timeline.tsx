@@ -1205,68 +1205,173 @@ export default function Timeline() {
       lineageTeacherIds
     );
   }, [visibleItems, pixelsPerYear, lineageIds, lineageItemId, originalItemRows, lineageLinks, lineageTeacherIds]);
-  const lineageNodes = useMemo(
+  const normalizedLineageNodes = useMemo(
     () => lineageIds
       ? visibleItems
           .filter((item) => lineageIds.has(item.id))
           .map((item) => {
             const row = lineageItemRows.get(item.id) ?? 0;
-            const x = getRelativePosition(item.startDate);
+            const start = dateToNumber(item.startDate);
+            const x = start * pixelsPerYear * zoom;
 
             return {
               item,
               row,
               x,
               endX: item.endDate
-                ? x + Math.abs(getRelativePosition(item.endDate) - x)
+                ? dateToNumber(item.endDate) * pixelsPerYear * zoom
                 : x,
-              y: getItemY(item, row, axisY, zoom),
+              y: getItemY(item, row, 0, zoom),
             };
           })
       : [],
-    [visibleItems, lineageIds, lineageItemRows, getRelativePosition, axisY, zoom]
+    [visibleItems, lineageIds, lineageItemRows, pixelsPerYear, zoom]
   );
-  const lineageRoutes = useMemo(
+  const normalizedLineageRoutes = useMemo(
     () => lineageIds
-      ? getLineageRoutes(lineageNodes, lineageLinks, axisY, zoom)
+      ? getLineageRoutes(normalizedLineageNodes, lineageLinks, 0, zoom)
       : [],
-    [lineageIds, lineageNodes, lineageLinks, axisY, zoom]
+    [lineageIds, normalizedLineageNodes, lineageLinks, zoom]
+  );
+  const routeHorizontalOffset = viewPosition * pixelsPerYear * zoom;
+  const routeCullStartYear = Math.floor(startVisibleYear / 500) * 500;
+  const routeCullEndYear = Math.ceil(endVisibleYear / 500) * 500;
+  const routeVisibleLeft = routeCullStartYear * pixelsPerYear * zoom;
+  const routeVisibleRight = routeCullEndYear * pixelsPerYear * zoom;
+  const renderLineageRoutes = useMemo(
+    () => normalizedLineageRoutes.filter((route) => {
+      let left = Infinity;
+      let right = -Infinity;
+      route.points.forEach((point) => {
+        left = Math.min(left, point.x);
+        right = Math.max(right, point.x);
+      });
+      return right >= routeVisibleLeft && left <= routeVisibleRight;
+    }),
+    [normalizedLineageRoutes, routeVisibleLeft, routeVisibleRight]
   );
   // Holding Shift flips the hover from the box's students to its teachers.
   const hoveredLinkedIds = useMemo(
-    () => new Set(lineageRoutes.flatMap((route) => {
+    () => new Set(normalizedLineageRoutes.flatMap((route) => {
       if (route.teacherId === hoveredLineageItemId && !shiftHeld) return [route.studentId];
       if (route.studentId === hoveredLineageItemId && shiftHeld) return [route.teacherId];
       return [];
     })),
-    [lineageRoutes, hoveredLineageItemId, shiftHeld]
+    [normalizedLineageRoutes, hoveredLineageItemId, shiftHeld]
   );
-  const lineageBounds = useMemo(
+  const normalizedLineageBounds = useMemo(
     () => lineageIds
       ? getLineageBounds(
-          lineageNodes,
-          lineageRoutes,
+          normalizedLineageNodes,
+          normalizedLineageRoutes,
           16 * zoom,
           zoom,
-          lineageNodes.find((node) => node.item.id === lineageItemId)?.y
+          normalizedLineageNodes.find((node) => node.item.id === lineageItemId)?.y
         )
       : null,
-    [lineageIds, lineageNodes, lineageRoutes, zoom, lineageItemId]
+    [lineageIds, normalizedLineageNodes, normalizedLineageRoutes, zoom, lineageItemId]
   );
   const routeRange = useMemo(
-    () => lineageBounds
+    () => normalizedLineageBounds
       ? {
-          start: viewPosition + lineageBounds.left / (pixelsPerYear * zoom),
-          end: viewPosition + lineageBounds.right / (pixelsPerYear * zoom),
+          start: normalizedLineageBounds.left / (pixelsPerYear * zoom),
+          end: normalizedLineageBounds.right / (pixelsPerYear * zoom),
         }
       : null,
-    [lineageBounds, viewPosition, pixelsPerYear, zoom]
+    [normalizedLineageBounds, pixelsPerYear, zoom]
   );
   const clearanceRows = useMemo(
-    () => lineageBounds
-      ? getLineageClearanceRows(lineageBounds, axisY, zoom)
+    () => normalizedLineageBounds
+      ? getLineageClearanceRows(normalizedLineageBounds, 0, zoom)
       : { above: null, below: null },
-    [lineageBounds, axisY, zoom]
+    [normalizedLineageBounds, zoom]
+  );
+  const lineageRouteElements = useMemo(
+    () => {
+      const pathGroups = new Map<string, {
+        commands: string[];
+        color: string;
+        opacity: number;
+        lineWidth: number;
+        dashed: boolean;
+        highlighted: boolean;
+      }>();
+      const arrowPathGroups = new Map<string, {
+        commands: string[];
+        color: string;
+        opacity: number;
+        highlighted: boolean;
+      }>();
+      renderLineageRoutes.forEach(({ teacherId, studentId, dashed, segments, arrow }) => {
+        const highlighted = hoveredLineageItemId === (shiftHeld ? studentId : teacherId);
+        const lineWidth = highlighted ? Math.max(2.5, 3 * zoom) : Math.max(1.5, 2 * zoom);
+        segments.forEach(({ start, end, opacity }) => {
+          const strokeOpacity = highlighted && opacity > 0.5 ? Math.max(opacity, 0.8) : opacity;
+          const groupKey = `${highlighted}:${dashed}:${strokeOpacity}:${lineWidth}`;
+          const group = pathGroups.get(groupKey);
+          const command = `M${start.x} ${start.y}L${end.x} ${end.y}`;
+          if (group) group.commands.push(command);
+          else pathGroups.set(groupKey, {
+            commands: [command],
+            color: highlighted ? "#ffd166" : "#ddd",
+            opacity: strokeOpacity,
+            lineWidth,
+            dashed,
+            highlighted,
+          });
+        });
+
+        const color = highlighted ? "#ffd166" : "#ddd";
+        const arrowKey = `${highlighted}:${arrow.opacity}`;
+        const angle = (arrow.angle * Math.PI) / 180;
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
+        const rotatedPoint = (x: number, y: number) => ({
+          x: arrow.tip.x + x * cos - y * sin,
+          y: arrow.tip.y + x * sin + y * cos,
+        });
+        const first = rotatedPoint(-arrow.size * 2, -arrow.size * 0.8);
+        const second = rotatedPoint(-arrow.size * 2, arrow.size * 0.8);
+        const command = `M${arrow.tip.x} ${arrow.tip.y}L${first.x} ${first.y}L${second.x} ${second.y}Z`;
+        const arrowGroup = arrowPathGroups.get(arrowKey);
+        if (arrowGroup) arrowGroup.commands.push(command);
+        else arrowPathGroups.set(arrowKey, {
+          commands: [command],
+          color,
+          opacity: arrow.opacity,
+          highlighted,
+        });
+      });
+
+      return (
+        <>
+          {Array.from(pathGroups, ([key, group]) => (
+            <path
+              key={key}
+              d={group.commands.join("")}
+              fill="none"
+              stroke={group.color}
+              strokeOpacity={group.opacity}
+              strokeWidth={group.lineWidth}
+              strokeLinecap={group.dashed ? "butt" : "round"}
+              strokeDasharray={group.dashed ? `${group.lineWidth * 2} ${group.lineWidth * 2}` : undefined}
+              style={group.highlighted ? { filter: "drop-shadow(0 0 4px rgba(255,209,102,0.95))" } : undefined}
+            />
+          ))}
+          {Array.from(arrowPathGroups, ([key, group]) => (
+            <path
+              key={`arrow-${key}`}
+              d={group.commands.join("")}
+              fill={group.color}
+              fillOpacity={group.opacity}
+              stroke="none"
+              style={group.highlighted ? { filter: "drop-shadow(0 0 4px rgba(255,209,102,0.95))" } : undefined}
+            />
+          ))}
+        </>
+      );
+    },
+    [renderLineageRoutes, hoveredLineageItemId, shiftHeld, zoom]
   );
   const clearThroughRows = useMemo(() => {
     const rows = { above: clearanceRows.above, below: clearanceRows.below };
@@ -1815,56 +1920,28 @@ export default function Timeline() {
           {/* TIMELINE ITEMS */}
           {/* ─────────────────────────── */}
 
-          {lineageRoutes.length > 0 && (
+          {normalizedLineageRoutes.length > 0 && (
             <svg
               aria-hidden="true"
               width="1"
               height="1"
               style={{ position: "absolute", left: 0, top: 0, overflow: "visible", pointerEvents: "none", zIndex: 4 }}
             >
-              {lineageBounds && (
-                <rect
-                  x={lineageBounds.left}
-                  y={lineageBounds.top}
-                  width={lineageBounds.right - lineageBounds.left}
-                  height={lineageBounds.bottom - lineageBounds.top}
-                  rx={6 * zoom}
-                  fill="rgba(245,166,35,0.06)"
-                  stroke="#f5a623"
-                  strokeWidth={Math.max(2, 2 * zoom)}
-                />
-              )}
-              {lineageRoutes.map(({ key, teacherId, studentId, dashed, segments, arrow }) => {
-                const isHighlighted = hoveredLineageItemId === (shiftHeld ? studentId : teacherId);
-                const lineWidth = isHighlighted ? Math.max(2.5, 3 * zoom) : Math.max(1.5, 2 * zoom);
-                return (
-                <g
-                  key={key}
-                  style={isHighlighted ? { filter: "drop-shadow(0 0 4px rgba(255,209,102,0.95))" } : undefined}
-                >
-                  {segments.map(({ start, end, opacity }, index) => (
-                    <line
-                      key={`${key}-${index}`}
-                      x1={start.x}
-                      y1={start.y}
-                      x2={end.x}
-                      y2={end.y}
-                      stroke={isHighlighted ? "#ffd166" : "#ddd"}
-                      strokeOpacity={isHighlighted && opacity > 0.5 ? Math.max(opacity, 0.8) : opacity}
-                      strokeWidth={lineWidth}
-                      strokeLinecap={dashed ? "butt" : "round"}
-                      strokeDasharray={dashed ? `${lineWidth * 2} ${lineWidth * 2}` : undefined}
-                    />
-                  ))}
-                  <polygon
-                    points={`0,0 ${-arrow.size * 2},${-arrow.size * 0.8} ${-arrow.size * 2},${arrow.size * 0.8}`}
-                    transform={`translate(${arrow.tip.x} ${arrow.tip.y}) rotate(${arrow.angle})`}
-                    fill={isHighlighted ? "#ffd166" : "#ddd"}
-                    fillOpacity={arrow.opacity}
+              <g transform={`translate(${-routeHorizontalOffset} ${axisY})`}>
+                {normalizedLineageBounds && (
+                  <rect
+                    x={normalizedLineageBounds.left}
+                    y={normalizedLineageBounds.top}
+                    width={normalizedLineageBounds.right - normalizedLineageBounds.left}
+                    height={normalizedLineageBounds.bottom - normalizedLineageBounds.top}
+                    rx={6 * zoom}
+                    fill="rgba(245,166,35,0.06)"
+                    stroke="#f5a623"
+                    strokeWidth={Math.max(2, 2 * zoom)}
                   />
-                </g>
-                );
-              })}
+                )}
+                {lineageRouteElements}
+              </g>
             </svg>
           )}
 

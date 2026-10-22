@@ -4,6 +4,10 @@ import type { TimelineItem } from "./types";
 type Point = { x: number; y: number };
 type Rect = { left: number; right: number; top: number; bottom: number };
 type Side = TimelineItem["position"];
+
+type RectIndexEntry = { id: number; bounds: Rect };
+type RectIndexNode = { bounds: Rect; entries?: RectIndexEntry[]; children?: RectIndexNode[] };
+
 export type LineageBounds = Rect;
 
 export type LineageNode = {
@@ -161,14 +165,61 @@ function getGapY(side: Side, gap: number, axisY: number, zoom: number) {
   return side === "above" ? axisY - distance : axisY + distance;
 }
 
+function unionBounds(entries: RectIndexEntry[]): Rect {
+  return entries.reduce((bounds, entry) => ({
+    left: Math.min(bounds.left, entry.bounds.left),
+    right: Math.max(bounds.right, entry.bounds.right),
+    top: Math.min(bounds.top, entry.bounds.top),
+    bottom: Math.max(bounds.bottom, entry.bounds.bottom),
+  }), { left: Infinity, right: -Infinity, top: Infinity, bottom: -Infinity });
+}
+
+function buildRectIndex(entries: RectIndexEntry[], leafSize = 8): RectIndexNode | null {
+  if (entries.length === 0) return null;
+  const bounds = unionBounds(entries);
+  if (entries.length <= leafSize) return { bounds, entries };
+
+  const splitByX = bounds.right - bounds.left >= bounds.bottom - bounds.top;
+  const sorted = [...entries].sort((first, second) => splitByX
+    ? (first.bounds.left + first.bounds.right) - (second.bounds.left + second.bounds.right)
+    : (first.bounds.top + first.bounds.bottom) - (second.bounds.top + second.bounds.bottom)
+  );
+  const middle = Math.floor(sorted.length / 2);
+  const children = [
+    buildRectIndex(sorted.slice(0, middle), leafSize),
+    buildRectIndex(sorted.slice(middle), leafSize),
+  ].filter((child): child is RectIndexNode => child !== null);
+  return { bounds, children };
+}
+
+function overlapsRect(first: Rect, second: Rect) {
+  return first.right > second.left &&
+    first.left < second.right &&
+    first.bottom > second.top &&
+    first.top < second.bottom;
+}
+
+function queryRectIndex(node: RectIndexNode | null, query: Rect, matches: Set<number>) {
+  if (!node || !overlapsRect(query, node.bounds)) return;
+  if (node.entries) {
+    node.entries.forEach((entry) => {
+      if (overlapsRect(query, entry.bounds)) matches.add(entry.id);
+    });
+    return;
+  }
+  node.children?.forEach((child) => queryRectIndex(child, query, matches));
+}
+
 function countHits(
   x: number,
   fromY: number,
   toY: number,
   rectsById: Map<number, Rect[]>,
-  ignoredIds: number[]
+  rectIndex: RectIndexNode | null,
+  ignoredIds: number[],
+  skipTextForId?: number
 ) {
-  return countSegmentHits(x, fromY, x, toY, rectsById, ignoredIds);
+  return countSegmentHits(x, fromY, x, toY, rectsById, rectIndex, ignoredIds, skipTextForId);
 }
 
 function countSegmentHits(
@@ -177,18 +228,29 @@ function countSegmentHits(
   x2: number,
   y2: number,
   rectsById: Map<number, Rect[]>,
-  ignoredIds: number[]
+  rectIndex: RectIndexNode | null,
+  ignoredIds: number[],
+  skipTextForId?: number
 ) {
   const left = Math.min(x1, x2);
   const right = Math.max(x1, x2);
   const top = Math.min(y1, y2);
   const bottom = Math.max(y1, y2);
   let hits = 0;
+  const candidates = new Set<number>();
+  queryRectIndex(rectIndex, { left, right, top, bottom }, candidates);
 
-  rectsById.forEach((rects, id) => {
+  candidates.forEach((id) => {
     if (ignoredIds.includes(id)) return;
-    if (rects.some((rect) => right > rect.left && left < rect.right && bottom > rect.top && top < rect.bottom)) {
-      hits += 1;
+    const rects = rectsById.get(id);
+    if (!rects) return;
+    for (let index = 0; index < rects.length; index += 1) {
+      if (id === skipTextForId && index > 0) continue;
+      const rect = rects[index];
+      if (right > rect.left && left < rect.right && bottom > rect.top && top < rect.bottom) {
+        hits += 1;
+        break;
+      }
     }
   });
 
@@ -201,8 +263,10 @@ function pickStubX(
   channelY: number,
   zoom: number,
   rectsById: Map<number, Rect[]>,
+  rectIndex: RectIndexNode | null,
   ignoredIds: number[],
-  excludedXs: number[] = []
+  excludedXs: number[] = [],
+  skipTextForId?: number
 ) {
   let best = { x: start.x + 10 * zoom, hits: Infinity };
 
@@ -210,8 +274,8 @@ function pickStubX(
     const x = start.x + offset * zoom;
     if (excludedXs.includes(x)) continue;
     const hits =
-      countSegmentHits(start.x, start.y, x, start.y, rectsById, ignoredIds) +
-      countSegmentHits(x, start.y, x, channelY, rectsById, ignoredIds);
+      countSegmentHits(start.x, start.y, x, start.y, rectsById, rectIndex, ignoredIds, skipTextForId) +
+      countSegmentHits(x, start.y, x, channelY, rectsById, rectIndex, ignoredIds, skipTextForId);
     if (hits < best.hits) best = { x, hits };
     if (hits === 0) break;
   }
@@ -226,6 +290,7 @@ function pickX(
   fromY: number,
   toY: number,
   rectsById: Map<number, Rect[]>,
+  rectIndex: RectIndexNode | null,
   ignoredIds: number[]
 ) {
   const candidates = [baseX, ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map(
@@ -234,7 +299,7 @@ function pickX(
 
   let best = { x: baseX, hits: Infinity };
   for (const x of candidates) {
-    const hits = countHits(x, fromY, toY, rectsById, ignoredIds);
+    const hits = countHits(x, fromY, toY, rectsById, rectIndex, ignoredIds);
     if (hits < best.hits) best = { x, hits };
     if (hits === 0) break;
   }
@@ -256,25 +321,38 @@ type PlannedRoute = {
   direct?: boolean;
 };
 
-function isDescendant(ancestorId: number, descendantId: number, studentsByTeacher: Map<number, number[]>) {
+function isDescendant(
+  ancestorId: number,
+  descendantId: number,
+  studentsByTeacher: Map<number, number[]>,
+  descendantsByTeacher: Map<number, Set<number>>
+) {
+  const cachedDescendants = descendantsByTeacher.get(ancestorId);
+  if (cachedDescendants) return cachedDescendants.has(descendantId);
+
   const pending = [...(studentsByTeacher.get(ancestorId) ?? [])];
   const visited = new Set<number>();
 
   while (pending.length > 0) {
     const current = pending.pop()!;
-    if (current === descendantId) return true;
     if (visited.has(current)) continue;
     visited.add(current);
     pending.push(...(studentsByTeacher.get(current) ?? []));
   }
 
-  return false;
+  descendantsByTeacher.set(ancestorId, visited);
+  return visited.has(descendantId);
 }
 
-function areRelatedStudents(firstId: number, secondId: number, studentsByTeacher: Map<number, number[]>) {
+function areRelatedStudents(
+  firstId: number,
+  secondId: number,
+  studentsByTeacher: Map<number, number[]>,
+  descendantsByTeacher: Map<number, Set<number>>
+) {
   return firstId !== secondId && (
-    isDescendant(firstId, secondId, studentsByTeacher) ||
-    isDescendant(secondId, firstId, studentsByTeacher)
+    isDescendant(firstId, secondId, studentsByTeacher, descendantsByTeacher) ||
+    isDescendant(secondId, firstId, studentsByTeacher, descendantsByTeacher)
   );
 }
 
@@ -286,15 +364,26 @@ export function getLineageRoutes(
 ): LineageRoute[] {
   const nodesById = new Map(nodes.map((node) => [node.item.id, node]));
   const rectsById = new Map(nodes.map((node) => [node.item.id, getRects(node, zoom)]));
+  const rectIndex = buildRectIndex(nodes.map((node) => {
+    const id = node.item.id;
+    return {
+      id,
+      bounds: unionBounds((rectsById.get(id) ?? []).map((bounds) => ({ id, bounds }))),
+    };
+  }));
   const textRects = nodes.flatMap((node) => getTextRects(node, zoom));
   const grandLinkKeys = new Set(
     links.filter(({ grand }) => grand).map(({ teacherId, studentId }) => `${teacherId}-${studentId}`)
   );
   const studentsByTeacher = new Map<number, number[]>();
   links.forEach(({ teacherId, studentId }) => {
-    studentsByTeacher.set(teacherId, [...(studentsByTeacher.get(teacherId) ?? []), studentId]);
+    const students = studentsByTeacher.get(teacherId);
+    if (students) students.push(studentId);
+    else studentsByTeacher.set(teacherId, [studentId]);
   });
+  const descendantsByTeacher = new Map<number, Set<number>>();
   const planned: PlannedRoute[] = [];
+  const plannedByTeacher = new Map<number, PlannedRoute[]>();
 
   links.forEach(({ teacherId, studentId }) => {
     const teacher = nodesById.get(teacherId);
@@ -304,8 +393,6 @@ export function getLineageRoutes(
     const teacherBar = rectsById.get(teacherId)![0];
     // Connectors always leave a teacher from the right.
     const start = { x: teacherBar.right, y: teacher.y };
-    const routeRectsById = new Map(rectsById);
-    routeRectsById.set(studentId, rectsById.get(studentId)!.slice(0, 1));
     const studentBar = rectsById.get(studentId)![0];
     const preferredStudentEdgeY = start.y < studentBar.top
       ? studentBar.top
@@ -315,8 +402,8 @@ export function getLineageRoutes(
     const studentDirection = Math.sign(student.y - start.y);
     const sameSide = teacher.item.position === student.item.position;
     const sides = sameSide ? [teacher.item.position] : [teacher.item.position, student.item.position];
-    const relatedRoutes = planned.filter((route) =>
-      route.teacherId === teacherId && areRelatedStudents(route.studentId, studentId, studentsByTeacher)
+    const relatedRoutes = (plannedByTeacher.get(teacherId) ?? []).filter((route) =>
+      areRelatedStudents(route.studentId, studentId, studentsByTeacher, descendantsByTeacher)
     );
     const reservedBranchXs = relatedRoutes.map((route) => route.direct ? route.studentX : route.stubX);
     let best = null as (PlannedRoute & { cost: number }) | null;
@@ -341,9 +428,9 @@ export function getLineageRoutes(
       const studentEdgeY = entry === "axis" ? getEdgeY(student, zoom) : getFarEdgeY(student, zoom);
       if (preferredStudentEdgeY !== null && studentEdgeY !== preferredStudentEdgeY) return;
       if (studentDirection !== 0 && (gapY - start.y) * studentDirection < 0) return;
-      const stubPick = pickStubX(start, gapY, zoom, routeRectsById, [teacherId], reservedBranchXs);
+      const stubPick = pickStubX(start, gapY, zoom, rectsById, rectIndex, [teacherId], reservedBranchXs, studentId);
       const idealX = Math.min(Math.max(stubPick.x, entryRange.left), entryRange.right);
-      const entryPick = pickX(idealX, entryRange, gapY, studentEdgeY, rectsById, [studentId]);
+      const entryPick = pickX(idealX, entryRange, gapY, studentEdgeY, rectsById, rectIndex, [studentId]);
       const cost =
         (stubPick.hits + entryPick.hits) * 100000 +
         (stubPick.x - start.x) +
@@ -385,8 +472,8 @@ export function getLineageRoutes(
         // One turn: straight along the teacher's line, then straight into the student.
         xs.forEach((x) => {
           const hits =
-            countSegmentHits(start.x, start.y, x, start.y, rectsById, [teacherId, studentId]) +
-            countHits(x, start.y, approachEdgeY, rectsById, [teacherId, studentId]);
+            countSegmentHits(start.x, start.y, x, start.y, rectsById, rectIndex, [teacherId, studentId]) +
+            countHits(x, start.y, approachEdgeY, rectsById, rectIndex, [teacherId, studentId]);
           const cost = hits * 100000 + (x - start.x) + Math.abs(approachEdgeY - start.y);
 
           if (!best || cost < best.cost) {
@@ -410,10 +497,10 @@ export function getLineageRoutes(
         // Two turns with the sideways run just short of the student.
         const nearY = approachEdgeY - dir * 14 * zoom;
         if (dir * (nearY - start.y) > 0) {
-          const stubPick = pickStubX(start, nearY, zoom, routeRectsById, [teacherId], reservedBranchXs);
+          const stubPick = pickStubX(start, nearY, zoom, rectsById, rectIndex, [teacherId], reservedBranchXs, studentId);
           const idealX = Math.min(Math.max(stubPick.x, entryRange.left), entryRange.right);
-          const entryPick = pickX(idealX, entryRange, nearY, approachEdgeY, rectsById, [studentId]);
-          const crossHits = countSegmentHits(stubPick.x, nearY, entryPick.x, nearY, rectsById, [teacherId, studentId]);
+          const entryPick = pickX(idealX, entryRange, nearY, approachEdgeY, rectsById, rectIndex, [studentId]);
+          const crossHits = countSegmentHits(stubPick.x, nearY, entryPick.x, nearY, rectsById, rectIndex, [teacherId, studentId]);
           const cost =
             (stubPick.hits + entryPick.hits + crossHits) * 100000 +
             (stubPick.x - start.x) + Math.abs(nearY - start.y) +
@@ -438,7 +525,12 @@ export function getLineageRoutes(
       }
     }
 
-    if (best) planned.push(best);
+    if (best) {
+      planned.push(best);
+      const teacherRoutes = plannedByTeacher.get(teacherId);
+      if (teacherRoutes) teacherRoutes.push(best);
+      else plannedByTeacher.set(teacherId, [best]);
+    }
   });
 
   // Routes sharing a gap get their own lane when their horizontal spans overlap.
@@ -457,7 +549,7 @@ export function getLineageRoutes(
         const start = Math.min(route.stubX, route.studentX);
         const end = Math.max(route.stubX, route.studentX);
         const sharedPortRoute = sortedRoutes.slice(0, index).find((other) =>
-          !areRelatedStudents(other.studentId, route.studentId, studentsByTeacher) && (
+          !areRelatedStudents(other.studentId, route.studentId, studentsByTeacher, descendantsByTeacher) && (
             (other.start.x === route.start.x && other.start.y === route.start.y) ||
             (other.studentX === route.studentX && other.studentEdgeY === route.studentEdgeY)
           )
