@@ -3,7 +3,9 @@
 import dynamic from "next/dynamic";
 import {
   useCallback,
+  useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useState,
   useRef,
@@ -32,6 +34,8 @@ import {
   getItemY,
   getLabelInterval,
   getMinorTickInterval,
+  haveSameItemLayout,
+  isItemInRenderRange,
 } from "../lib/timeline/geometry";
 import TimelineControls from "./TimelineControls";
 import TimelineItemVisual from "./TimelineItemVisual";
@@ -62,8 +66,14 @@ import {
   getStudentLineageIds,
 } from "../lib/timeline/lineage";
 import { getLineageBounds, getLineageRoutes } from "../lib/timeline/lineageRoutes";
+import { onPersistError } from "../lib/timeline/storage";
 import { useTimelineItems } from "./useTimelineItems";
-import { buildTimelineItemData } from "../lib/timeline/validation";
+import { useLayoutStableItems } from "./useLayoutStableItems";
+import PointerOverlay from "./PointerOverlay";
+import { pointerStore } from "./pointerStore";
+import { applyLiveTransforms, setAxisElement, setTicksElement, setWorldElement } from "./liveView";
+import { buildItemDataWithTagPosition, itemToFormState } from "../lib/timeline/itemForm";
+import type { AddItemFormHandle } from "./AddItemForm";
 import {
   downloadTimelineCategory,
   downloadTimelineCsv,
@@ -121,14 +131,7 @@ function useRafThrottle(callback: (clientX: number, clientY: number) => void) {
   return { schedule, cancel };
 }
 
-let cachedItemRowInputs: {
-  id: number;
-  type: TimelineItem["type"];
-  titleLength: number;
-  start: number;
-  end: number | null;
-  position: TimelineItem["position"];
-}[] | null = null;
+let cachedItemRowItems: TimelineItem[] | null = null;
 let cachedItemRowPixelsPerYear: number | null = null;
 let cachedOriginalItemRows: Map<number, number> | null = null;
 
@@ -136,32 +139,72 @@ function getOriginalItemRows(
   items: TimelineItem[],
   pixelsPerYear: number
 ) {
-  if (cachedOriginalItemRows && cachedItemRowPixelsPerYear === pixelsPerYear && cachedItemRowInputs) {
-    let matches = cachedItemRowInputs.length === items.length;
-    for (let index = 0; matches && index < items.length; index += 1) {
-      const item = items[index];
-      const input = cachedItemRowInputs[index];
-      matches = input.id === item.id &&
-        input.type === item.type &&
-        input.titleLength === item.title.length &&
-        input.start === dateToNumber(item.startDate) &&
-        input.end === (item.endDate ? dateToNumber(item.endDate) : null) &&
-        input.position === item.position;
-    }
-    if (matches) return cachedOriginalItemRows;
+  if (
+    cachedOriginalItemRows &&
+    cachedItemRowPixelsPerYear === pixelsPerYear &&
+    cachedItemRowItems &&
+    haveSameItemLayout(cachedItemRowItems, items, false)
+  ) {
+    return cachedOriginalItemRows;
   }
 
   cachedItemRowPixelsPerYear = pixelsPerYear;
-  cachedItemRowInputs = items.map((item) => ({
-    id: item.id,
-    type: item.type,
-    titleLength: item.title.length,
-    start: dateToNumber(item.startDate),
-    end: item.endDate ? dateToNumber(item.endDate) : null,
-    position: item.position,
-  }));
+  cachedItemRowItems = items;
   cachedOriginalItemRows = getItemRows(items, pixelsPerYear);
   return cachedOriginalItemRows;
+}
+
+let cachedTeacherOptions: {
+  editingItemId: number | null;
+  inputs: { id: number; title: string; teacherIds?: number[] }[];
+  options: { id: number; title: string }[];
+} | null = null;
+
+function getTeacherOptions(items: TimelineItem[], editingItemId: number | null) {
+  const cached = cachedTeacherOptions;
+  if (
+    cached &&
+    cached.editingItemId === editingItemId &&
+    cached.inputs.length === items.length &&
+    cached.inputs.every((input, index) => {
+      const item = items[index];
+      return input.id === item.id &&
+        input.title === item.title &&
+        input.teacherIds === item.teacherIds;
+    })
+  ) {
+    return cached.options;
+  }
+
+  const descendantIds = editingItemId === null
+    ? new Set<number>()
+    : getDescendantIds(items, editingItemId);
+
+  const options = items
+    .filter((item) => item.id !== editingItemId && !descendantIds.has(item.id))
+    .map(({ id, title }) => ({ id, title }))
+    .sort((first, second) => first.title.localeCompare(second.title));
+  cachedTeacherOptions = {
+    editingItemId,
+    inputs: items.map(({ id, title, teacherIds }) => ({ id, title, teacherIds })),
+    options,
+  };
+  return options;
+}
+
+// Pixels of items and ticks rendered beyond the viewport; a drag commits to state after half of it.
+const PAN_PADDING_PX = 400;
+
+function getAxisLayout(viewportHeight: number, verticalOffset: number) {
+  const axisY = viewportHeight / 2 + verticalOffset;
+  const needsPinning = axisY < 0 || axisY + 34 > viewportHeight;
+  const pinnedToTop = needsPinning && axisY < 0;
+  const rendered = needsPinning
+    ? pinnedToTop
+      ? 8
+      : Math.max(8, viewportHeight - 40)
+    : axisY;
+  return { axisY, needsPinning, pinnedToTop, rendered };
 }
 
 export default function Timeline() {
@@ -203,9 +246,6 @@ export default function Timeline() {
 
   const [verticalOffset, setVerticalOffset] =
     useState(0);
-
-  const [pointerX, setPointerX] =
-    useState<number | null>(null);
 
   // ─────────────────────────────────────
   // SELECTED ITEM
@@ -302,18 +342,15 @@ export default function Timeline() {
   const [activeTagNames, setActiveTagNames] =
     useState<string[]>([]);
 
-  const [form, setForm] = useState<ItemFormState>(initialItemFormState);
-
-  const updateForm = useCallback((patch: Partial<ItemFormState>) => {
-    setDataError(null);
-    setForm((current) => ({ ...current, ...patch }));
-  }, []);
-
-  const [newTagName, setNewTagName] = useState("");
-
-  const [newTagColor, setNewTagColor] = useState("#ef4444");
+  // Initial values for the open form; AddItemForm owns the draft after mount.
+  const [formSeed, setFormSeed] = useState<ItemFormState>(initialItemFormState);
+  const formHandleRef = useRef<AddItemFormHandle>(null);
 
   const [dataError, setDataError] = useState<string | null>(null);
+
+  useEffect(() => onPersistError(setDataError), []);
+
+  const clearDataError = useCallback(() => setDataError(null), []);
 
   const closeDetails = useCallback(() => {
     setSelectedItemId(null);
@@ -390,33 +427,85 @@ export default function Timeline() {
   // TIMELINE AXIS POSITION
   // ─────────────────────────────────────
 
-  const axisY =
-    viewportHeight / 2 +
-    verticalOffset;
-
-  const axisNeedsPinning =
-    axisY < 0 ||
-    axisY + 34 > viewportHeight;
-
-  const axisPinnedToTop =
-    axisNeedsPinning && axisY < 0;
-
-  const renderedAxisY =
-    axisNeedsPinning
-      ? axisPinnedToTop
-        ? 8
-        : Math.max(8, viewportHeight - 40)
-      : axisY;
+  const {
+    axisY,
+    needsPinning: axisNeedsPinning,
+    pinnedToTop: axisPinnedToTop,
+    rendered: renderedAxisY,
+  } = getAxisLayout(viewportHeight, verticalOffset);
 
   const pointerYearBannerTop =
     axisPinnedToTop ? 56 : 12;
 
-  const pointerYear =
-    pointerX === null
-      ? null
-      : viewPosition +
-        (pointerX - viewportWidth / 2) /
-          (pixelsPerYear * zoom);
+  // Live view state: during a drag these run ahead of viewPosition/verticalOffset and are applied to the DOM directly.
+  const livePositionRef = useRef(viewPosition);
+  const liveOffsetRef = useRef(verticalOffset);
+  const isDraggingRef = useRef(false);
+  const layoutRef = useRef({
+    pixelsPerYear,
+    zoom,
+    viewportHeight,
+    viewPosition,
+    renderedAxisY,
+    axisNeedsPinning,
+    axisPinnedToTop,
+  });
+
+  const applyLiveView = useCallback(() => {
+    const layout = layoutRef.current;
+    const position = livePositionRef.current;
+    const live = getAxisLayout(layout.viewportHeight, liveOffsetRef.current);
+    const worldX = -position * layout.pixelsPerYear * layout.zoom;
+    const axisShift = live.rendered - layout.renderedAxisY;
+
+    applyLiveTransforms(worldX, live.axisY, axisShift);
+    pointerStore.set({ position });
+  }, []);
+
+  const commitLiveView = useCallback(() => {
+    setViewPosition(livePositionRef.current);
+    setVerticalOffset(liveOffsetRef.current);
+  }, []);
+
+  // Commits when the live view leaves the padded render window or the axis changes pinning.
+  const commitLiveViewIfNeeded = useCallback(() => {
+    const layout = layoutRef.current;
+    const live = getAxisLayout(layout.viewportHeight, liveOffsetRef.current);
+    const panned = Math.abs(livePositionRef.current - layout.viewPosition) *
+      layout.pixelsPerYear * layout.zoom;
+    if (
+      panned > PAN_PADDING_PX / 2 ||
+      live.needsPinning !== layout.axisNeedsPinning ||
+      live.pinnedToTop !== layout.axisPinnedToTop
+    ) {
+      commitLiveView();
+    }
+  }, [commitLiveView]);
+
+  // Sets both the live refs and committed state, for actions that read or replace the view.
+  const setView = useCallback((position: number, offset: number) => {
+    livePositionRef.current = position;
+    liveOffsetRef.current = offset;
+    setViewPosition(position);
+    setVerticalOffset(offset);
+  }, []);
+
+  useLayoutEffect(() => {
+    layoutRef.current = {
+      pixelsPerYear,
+      zoom,
+      viewportHeight,
+      viewPosition,
+      renderedAxisY,
+      axisNeedsPinning,
+      axisPinnedToTop,
+    };
+    if (!isDraggingRef.current) {
+      livePositionRef.current = viewPosition;
+      liveOffsetRef.current = verticalOffset;
+    }
+    applyLiveView();
+  });
 
   // ─────────────────────────────────────
   // HISTORICAL DATE → SCREEN POSITION
@@ -432,6 +521,12 @@ export default function Timeline() {
       zoom
     );
   }, [viewPosition, pixelsPerYear, zoom]);
+
+  // Independent of viewPosition, verticalOffset and viewport size, so panning leaves item props unchanged.
+  const getWorldPosition = useCallback(
+    (date: HistoricalDate) => dateToNumber(date) * pixelsPerYear * zoom,
+    [pixelsPerYear, zoom]
+  );
 
   function renderYearLabel(year: number) {
     const [yearNumber, era] =
@@ -541,29 +636,7 @@ export default function Timeline() {
   const startEditingItem = useCallback((item: TimelineItem, fromList = false) => {
     setEditingItemId(item.id);
     setEditingFromList(fromList);
-    setForm({
-      itemType: item.type,
-      title: item.title,
-      fullName: item.fullName ?? "",
-      description: item.description,
-      works: item.works ?? "",
-      color: item.color,
-      textColor: item.textColor,
-      tags: item.tags,
-      teacherIds: item.teacherIds ?? [],
-      grandTeacherIds: item.grandTeacherIds ?? [],
-      startYear: String(item.startDate.year),
-      startEra: item.startDate.era,
-      startMonth: item.startDate.month ? String(item.startDate.month) : "",
-      startDay: item.startDate.day ? String(item.startDate.day) : "",
-      startApproximate: item.startDate.approximate === true,
-      endYear: item.endDate ? String(item.endDate.year) : "",
-      endEra: item.endDate?.era ?? "CE",
-      endMonth: item.endDate?.month ? String(item.endDate.month) : "",
-      endDay: item.endDate?.day ? String(item.endDate.day) : "",
-      endApproximate: item.endDate?.approximate === true,
-      position: item.position,
-    });
+    setFormSeed(itemToFormState(item));
     setShowAddForm(true);
     setShowItemList(false);
     setSelectedItemId(null);
@@ -586,6 +659,29 @@ export default function Timeline() {
   // the background, so panning still works
   // while pressing on an item.
   // ─────────────────────────────────────
+
+  function beginDrag(event: React.PointerEvent) {
+    setIsDragging(true);
+    isDraggingRef.current = true;
+
+    hasDragged.current = false;
+
+    dragStartX.current =
+      event.clientX;
+
+    dragStartY.current =
+      event.clientY;
+
+    dragStartPosition.current =
+      livePositionRef.current;
+
+    dragStartVerticalOffset.current =
+      liveOffsetRef.current;
+
+    event.currentTarget.setPointerCapture(
+      event.pointerId
+    );
+  }
 
   function handleItemPointerDown(
     event: React.PointerEvent
@@ -636,36 +732,27 @@ export default function Timeline() {
     setShowItemList(true);
   }, [closeItemEditor]);
 
-  const resetItemForm = useCallback(() => {
-    setForm(initialItemFormState);
-  }, []);
-
   const startAddingItem = useCallback(() => {
     if (showAddForm) {
       closeItemEditor();
       return;
     }
 
-    resetItemForm();
+    setFormSeed(initialItemFormState);
     setEditingItemId(null);
     setShowAddForm(true);
-  }, [showAddForm, closeItemEditor, resetItemForm]);
+  }, [showAddForm, closeItemEditor]);
 
-  const handleCreateTag = useCallback(() => {
-    const tag = createTimelineTag(tags, newTagName, newTagColor);
-    if (!tag) return;
+  const handleCreateTag = useCallback((nameValue: string, color: string) => {
+    const tag = createTimelineTag(tags, nameValue, color);
+    if (!tag) return null;
 
     setTags((currentTags) => [
       ...currentTags,
       tag,
     ]);
-    updateForm({
-      tags: [...form.tags, tag.name],
-      // Adopt the first tag's color as the item's box and text color.
-      ...(form.tags.length === 0 ? { color: newTagColor, textColor: newTagColor } : {}),
-    });
-    setNewTagName("");
-  }, [tags, newTagName, newTagColor, form, updateForm, setTags]);
+    return tag.name;
+  }, [tags, setTags]);
 
   const handleCreateTagFromMenu = useCallback((nameValue: string, color: string) => {
     const tag = createTimelineTag(tags, nameValue, color);
@@ -693,8 +780,7 @@ export default function Timeline() {
     setItems((currentItems) =>
       renameTagOnTimelineItems(currentItems, oldName, newName)
     );
-    setForm((currentForm) => ({
-      ...currentForm,
+    formHandleRef.current?.update((currentForm) => ({
       tags: currentForm.tags.map((name) => name === oldName ? newName : name),
     }));
     setActiveTagNames((currentNames) =>
@@ -734,8 +820,7 @@ export default function Timeline() {
   const handleDeleteTag = useCallback((tagName: string) => {
     setTags((currentTags) => deleteTimelineTag(currentTags, tagName));
     setItems((currentItems) => removeTagFromTimelineItems(currentItems, tagName));
-    setForm((currentForm) => ({
-      ...currentForm,
+    formHandleRef.current?.update((currentForm) => ({
       tags: currentForm.tags.filter((name) => name !== tagName),
     }));
     setActiveTagNames((currentNames) =>
@@ -746,6 +831,8 @@ export default function Timeline() {
   const duplicateEditingItem = useCallback(() => {
     if (editingItemId === null) return;
 
+    // Save pending edits first so the copy includes them.
+    formHandleRef.current?.flush();
     setItems((currentItems) =>
       duplicateTimelineItem(currentItems, editingItemId)
     );
@@ -755,6 +842,7 @@ export default function Timeline() {
   const deleteEditingItem = useCallback(() => {
     if (editingItemId === null) return;
 
+    formHandleRef.current?.discard();
     setItems((currentItems) => deleteTimelineItem(currentItems, editingItemId));
     if (lineageItemId === editingItemId) setLineageItemId(null);
     closeItemEditor();
@@ -804,8 +892,11 @@ export default function Timeline() {
     const mouseOffsetFromCenter =
       event.clientX - viewportWidth / 2;
 
+    const livePosition = livePositionRef.current;
+    const liveOffset = liveOffsetRef.current;
+
     const historicalPositionUnderMouse =
-      viewPosition +
+      livePosition +
       mouseOffsetFromCenter /
         (pixelsPerYear * zoom);
 
@@ -815,15 +906,14 @@ export default function Timeline() {
         (pixelsPerYear * newZoom);
 
     const mouseOffsetFromAxis =
-      event.clientY - axisY;
+      event.clientY - (viewportHeight / 2 + liveOffset);
 
     const newVerticalOffset =
-      verticalOffset +
+      liveOffset +
       mouseOffsetFromAxis *
         (1 - newZoom / zoom);
 
-    setViewPosition(newViewPosition);
-    setVerticalOffset(newVerticalOffset);
+    setView(newViewPosition, newVerticalOffset);
     setZoom(newZoom);
   }
 
@@ -834,10 +924,9 @@ export default function Timeline() {
   }, []);
 
   const resetView = useCallback(() => {
-    setViewPosition(dateToNumber({ year: 800, era: "CE" }));
+    setView(dateToNumber({ year: 800, era: "CE" }), 0);
     setZoom(1);
-    setVerticalOffset(0);
-  }, []);
+  }, [setView]);
 
   const handleSearchSelect = useCallback((item: TimelineItem) => {
     const searchLineageIds = lineageItemId === null
@@ -846,15 +935,17 @@ export default function Timeline() {
     const row = getItemRows(items, pixelsPerYear, searchLineageIds ?? undefined).get(item.id) ?? 0;
     const itemDistance = getItemDistance(row, zoom);
     setActiveTagNames([]);
-    setViewPosition(dateToNumber(item.startDate));
-    setVerticalOffset(item.position === "above" ? itemDistance : -itemDistance);
+    setView(
+      dateToNumber(item.startDate),
+      item.position === "above" ? itemDistance : -itemDistance
+    );
     setHighlightedItemId(item.id);
     if (highlightTimer.current) clearTimeout(highlightTimer.current);
     highlightTimer.current = setTimeout(() => {
       setHighlightedItemId(null);
       highlightTimer.current = null;
     }, 2400);
-  }, [lineageItemId, items, pixelsPerYear, zoom]);
+  }, [lineageItemId, items, pixelsPerYear, zoom, setView]);
 
   const toggleFullscreen = useCallback(() => {
     if (!document.fullscreenElement) {
@@ -871,28 +962,6 @@ export default function Timeline() {
   // START DRAGGING
   // ─────────────────────────────────────
 
-  function beginDrag(event: React.PointerEvent) {
-    setIsDragging(true);
-
-    hasDragged.current = false;
-
-    dragStartX.current =
-      event.clientX;
-
-    dragStartY.current =
-      event.clientY;
-
-    dragStartPosition.current =
-      viewPosition;
-
-    dragStartVerticalOffset.current =
-      verticalOffset;
-
-    event.currentTarget.setPointerCapture(
-      event.pointerId
-    );
-  }
-
   function handlePointerDown(
     event: React.PointerEvent<HTMLDivElement>
   ) {
@@ -904,8 +973,8 @@ export default function Timeline() {
   // ─────────────────────────────────────
 
   function applyPointerMove(clientX: number, clientY: number) {
-    setPointerX(clientX);
-    if (!isDragging) {
+    pointerStore.set({ x: clientX });
+    if (!isDraggingRef.current) {
       return;
     }
 
@@ -935,19 +1004,20 @@ export default function Timeline() {
       deltaX /
       (pixelsPerYear * zoom);
 
-    setViewPosition(
+    livePositionRef.current =
       dragStartPosition.current -
-        positionMoved
-    );
+        positionMoved;
 
     // ───────────────────────────────────
     // VERTICAL MOVEMENT
     // ───────────────────────────────────
 
-    setVerticalOffset(
+    liveOffsetRef.current =
       dragStartVerticalOffset.current +
-        deltaY
-    );
+        deltaY;
+
+    applyLiveView();
+    commitLiveViewIfNeeded();
   }
 
   const { schedule: schedulePointerMove, cancel: cancelScheduledPointerMove } =
@@ -956,12 +1026,14 @@ export default function Timeline() {
   useEffect(() => {
     const stopDraggingOnBlur = () => {
       cancelScheduledPointerMove();
+      isDraggingRef.current = false;
+      commitLiveView();
       setIsDragging(false);
     };
 
     window.addEventListener("blur", stopDraggingOnBlur);
     return () => window.removeEventListener("blur", stopDraggingOnBlur);
-  }, [cancelScheduledPointerMove]);
+  }, [cancelScheduledPointerMove, commitLiveView]);
 
   function handlePointerMove(
     event: React.PointerEvent<HTMLDivElement>
@@ -972,7 +1044,7 @@ export default function Timeline() {
 
   function handlePointerLeave() {
     cancelScheduledPointerMove();
-    setPointerX(null);
+    pointerStore.set({ x: null });
   }
 
   // ─────────────────────────────────────
@@ -985,6 +1057,8 @@ export default function Timeline() {
     const { clientX, clientY } = event;
     cancelScheduledPointerMove();
     applyPointerMove(clientX, clientY);
+    isDraggingRef.current = false;
+    commitLiveView();
     setIsDragging(false);
 
     try {
@@ -997,52 +1071,34 @@ export default function Timeline() {
     }
   }
 
-  // Edits apply straight to the item as the form changes; no save step needed.
-  useEffect(() => {
+  const handleCommitEditedItem = useCallback((itemData: Omit<TimelineItem, "id">) => {
     if (editingItemId === null) return;
-
-    const itemData = buildTimelineItemData(form);
-    if (!itemData) return;
-
-    const itemDataWithTagPosition = {
-      ...itemData,
-      position: getTagItemPosition(tags, itemData.tags) ?? itemData.position,
-    };
-
     setItems((currentItems) =>
-      updateTimelineItem(currentItems, editingItemId, itemDataWithTagPosition)
+      updateTimelineItem(currentItems, editingItemId, itemData)
     );
-  }, [form, editingItemId, setItems, tags]);
+  }, [editingItemId, setItems]);
 
   // ─────────────────────────────────────
   // ADD TIMELINE ITEM
   // ─────────────────────────────────────
 
-  const handleAddItem = useCallback((event: React.FormEvent) => {
-    event.preventDefault();
-
-    const itemData = buildTimelineItemData(form);
-    if (!itemData) {
+  const handleAddItem = useCallback((form: ItemFormState) => {
+    const itemDataWithTagPosition = buildItemDataWithTagPosition(form, tags);
+    if (!itemDataWithTagPosition) {
       setDataError("Enter a name and valid whole-number dates. A period must end on or after its start date.");
       return;
     }
 
-    const itemDataWithTagPosition = {
-      ...itemData,
-      position: getTagItemPosition(tags, itemData.tags) ?? itemData.position,
-    };
-
     if (editingItemId !== null) {
-      // Existing items are already kept in sync live; just close the form.
+      // Edits are saved as the form changes; just close the form.
       closeItemEditor();
       return;
     }
 
     setItems((currentItems) => addTimelineItem(currentItems, itemDataWithTagPosition));
 
-    resetItemForm();
     setShowAddForm(false);
-  }, [form, tags, editingItemId, closeItemEditor, setItems, resetItemForm]);
+  }, [tags, editingItemId, closeItemEditor, setItems]);
 
 
   const handleImport = useCallback((file: File) => {
@@ -1129,15 +1185,19 @@ export default function Timeline() {
     viewportWidth /
     (pixelsPerYear * zoom);
 
+  // At least PAN_PADDING_PX on each side, so a drag can run ahead of state before a commit is needed.
+  const panPaddingYears =
+    Math.max(100, PAN_PADDING_PX / (pixelsPerYear * zoom));
+
   const startVisibleYear =
     viewPosition -
     yearsVisible / 2 -
-    100;
+    panPaddingYears;
 
   const endVisibleYear =
     viewPosition +
     yearsVisible / 2 +
-    100;
+    panPaddingYears;
 
   // ─────────────────────────────────────
   // TICK GENERATION
@@ -1161,27 +1221,34 @@ export default function Timeline() {
     [items, activeTagNames, tags]
   );
   const renderItems = useMemo(
-    () => visibleItems.filter((item) => {
-      const itemStart = dateToNumber(item.startDate);
-      const itemEnd = item.endDate ? dateToNumber(item.endDate) : itemStart;
-      return itemEnd >= startVisibleYear && itemStart <= endVisibleYear;
-    }),
-    [visibleItems, startVisibleYear, endVisibleYear]
+    () => visibleItems.filter((item) =>
+      isItemInRenderRange(
+        startVisibleYear,
+        endVisibleYear,
+        pixelsPerYear,
+        zoom,
+        item
+      )
+    ),
+    [visibleItems, startVisibleYear, endVisibleYear, pixelsPerYear, zoom]
   );
 
   const originalItemRows = getOriginalItemRows(
     visibleItems,
     pixelsPerYear
   );
+  // Lineage layout ignores colour, description and text colour, so those edits keep this array.
+  const lineageLayoutItems = useLayoutStableItems(visibleItems);
+  const lineageZoom = useDeferredValue(zoom);
   const lineageIds = useMemo(
     () => lineageItemId === null
       ? null
-      : getStudentLineageIds(visibleItems, lineageItemId),
-    [visibleItems, lineageItemId]
+      : getStudentLineageIds(lineageLayoutItems, lineageItemId),
+    [lineageLayoutItems, lineageItemId]
   );
   const lineageLinks = useMemo(
-    () => lineageIds ? getLineageLinks(visibleItems, lineageIds) : [],
-    [visibleItems, lineageIds]
+    () => lineageIds ? getLineageLinks(lineageLayoutItems, lineageIds) : [],
+    [lineageLayoutItems, lineageIds]
   );
   const lineageTeacherIds = useMemo(
     () => new Set(lineageLinks.map(({ teacherId }) => teacherId)),
@@ -1194,9 +1261,9 @@ export default function Timeline() {
       id: lineageItemId,
       row: originalItemRows.get(lineageItemId) ?? 0,
     };
-    const packedRows = getItemRows(visibleItems, pixelsPerYear, lineageIds, pinnedLineageItem, lineageTeacherIds);
+    const packedRows = getItemRows(lineageLayoutItems, pixelsPerYear, lineageIds, pinnedLineageItem, lineageTeacherIds);
     return optimizeLineageRows(
-      visibleItems,
+      lineageLayoutItems,
       pixelsPerYear,
       packedRows,
       lineageIds,
@@ -1204,40 +1271,40 @@ export default function Timeline() {
       lineageItemId,
       lineageTeacherIds
     );
-  }, [visibleItems, pixelsPerYear, lineageIds, lineageItemId, originalItemRows, lineageLinks, lineageTeacherIds]);
+  }, [lineageLayoutItems, pixelsPerYear, lineageIds, lineageItemId, originalItemRows, lineageLinks, lineageTeacherIds]);
   const normalizedLineageNodes = useMemo(
     () => lineageIds
-      ? visibleItems
+      ? lineageLayoutItems
           .filter((item) => lineageIds.has(item.id))
           .map((item) => {
             const row = lineageItemRows.get(item.id) ?? 0;
             const start = dateToNumber(item.startDate);
-            const x = start * pixelsPerYear * zoom;
+            const x = start * pixelsPerYear * lineageZoom;
 
             return {
               item,
               row,
               x,
               endX: item.endDate
-                ? dateToNumber(item.endDate) * pixelsPerYear * zoom
+                ? dateToNumber(item.endDate) * pixelsPerYear * lineageZoom
                 : x,
-              y: getItemY(item, row, 0, zoom),
+              y: getItemY(item, row, 0, lineageZoom),
             };
           })
       : [],
-    [visibleItems, lineageIds, lineageItemRows, pixelsPerYear, zoom]
+    [lineageLayoutItems, lineageIds, lineageItemRows, pixelsPerYear, lineageZoom]
   );
   const normalizedLineageRoutes = useMemo(
     () => lineageIds
-      ? getLineageRoutes(normalizedLineageNodes, lineageLinks, 0, zoom)
+      ? getLineageRoutes(normalizedLineageNodes, lineageLinks, 0, lineageZoom)
       : [],
-    [lineageIds, normalizedLineageNodes, lineageLinks, zoom]
+    [lineageIds, normalizedLineageNodes, lineageLinks, lineageZoom]
   );
-  const routeHorizontalOffset = viewPosition * pixelsPerYear * zoom;
+  // Route coordinates are in deferred-zoom pixels; the group is scaled by zoom / lineageZoom while it catches up.
   const routeCullStartYear = Math.floor(startVisibleYear / 500) * 500;
   const routeCullEndYear = Math.ceil(endVisibleYear / 500) * 500;
-  const routeVisibleLeft = routeCullStartYear * pixelsPerYear * zoom;
-  const routeVisibleRight = routeCullEndYear * pixelsPerYear * zoom;
+  const routeVisibleLeft = routeCullStartYear * pixelsPerYear * lineageZoom;
+  const routeVisibleRight = routeCullEndYear * pixelsPerYear * lineageZoom;
   const renderLineageRoutes = useMemo(
     () => normalizedLineageRoutes.filter((route) => {
       let left = Infinity;
@@ -1264,27 +1331,27 @@ export default function Timeline() {
       ? getLineageBounds(
           normalizedLineageNodes,
           normalizedLineageRoutes,
-          16 * zoom,
-          zoom,
+          16 * lineageZoom,
+          lineageZoom,
           normalizedLineageNodes.find((node) => node.item.id === lineageItemId)?.y
         )
       : null,
-    [lineageIds, normalizedLineageNodes, normalizedLineageRoutes, zoom, lineageItemId]
+    [lineageIds, normalizedLineageNodes, normalizedLineageRoutes, lineageZoom, lineageItemId]
   );
   const routeRange = useMemo(
     () => normalizedLineageBounds
       ? {
-          start: normalizedLineageBounds.left / (pixelsPerYear * zoom),
-          end: normalizedLineageBounds.right / (pixelsPerYear * zoom),
+          start: normalizedLineageBounds.left / (pixelsPerYear * lineageZoom),
+          end: normalizedLineageBounds.right / (pixelsPerYear * lineageZoom),
         }
       : null,
-    [normalizedLineageBounds, pixelsPerYear, zoom]
+    [normalizedLineageBounds, pixelsPerYear, lineageZoom]
   );
   const clearanceRows = useMemo(
     () => normalizedLineageBounds
-      ? getLineageClearanceRows(normalizedLineageBounds, 0, zoom)
+      ? getLineageClearanceRows(normalizedLineageBounds, 0, lineageZoom)
       : { above: null, below: null },
-    [normalizedLineageBounds, zoom]
+    [normalizedLineageBounds, lineageZoom]
   );
   const lineageRouteElements = useMemo(
     () => {
@@ -1304,7 +1371,7 @@ export default function Timeline() {
       }>();
       renderLineageRoutes.forEach(({ teacherId, studentId, dashed, segments, arrow }) => {
         const highlighted = hoveredLineageItemId === (shiftHeld ? studentId : teacherId);
-        const lineWidth = highlighted ? Math.max(2.5, 3 * zoom) : Math.max(1.5, 2 * zoom);
+        const lineWidth = highlighted ? Math.max(2.5, 3 * lineageZoom) : Math.max(1.5, 2 * lineageZoom);
         segments.forEach(({ start, end, opacity }) => {
           const strokeOpacity = highlighted && opacity > 0.5 ? Math.max(opacity, 0.8) : opacity;
           const groupKey = `${highlighted}:${dashed}:${strokeOpacity}:${lineWidth}`;
@@ -1371,13 +1438,13 @@ export default function Timeline() {
         </>
       );
     },
-    [renderLineageRoutes, hoveredLineageItemId, shiftHeld, zoom]
+    [renderLineageRoutes, hoveredLineageItemId, shiftHeld, lineageZoom]
   );
   const clearThroughRows = useMemo(() => {
     const rows = { above: clearanceRows.above, below: clearanceRows.below };
     if (!lineageIds) return rows;
 
-    visibleItems.forEach((item) => {
+    lineageLayoutItems.forEach((item) => {
       if (!lineageIds.has(item.id)) return;
       const row = lineageItemRows.get(item.id) ?? 0;
       const band = rows[item.position];
@@ -1386,7 +1453,7 @@ export default function Timeline() {
         : { min: row, max: row };
     });
     return rows;
-  }, [clearanceRows, visibleItems, lineageIds, lineageItemRows]);
+  }, [clearanceRows, lineageLayoutItems, lineageIds, lineageItemRows]);
   const itemRows = useMemo(
     () => lineageIds
       ? getItemRowsAroundLineage(
@@ -1403,38 +1470,10 @@ export default function Timeline() {
     [visibleItems, pixelsPerYear, originalItemRows, lineageItemRows, lineageIds, routeRange, clearThroughRows, lineageTeacherIds]
   );
 
-  const teacherOptionsCache = useRef<{
-    editingItemId: number | null;
-    inputs: { id: number; title: string; teacherIds?: number[] }[];
-    options: { id: number; title: string }[];
-  } | null>(null);
-  const teacherOptions = useMemo(() => {
-    const cached = teacherOptionsCache.current;
-    const inputsMatch = cached?.editingItemId === editingItemId &&
-      cached.inputs.length === items.length &&
-      cached.inputs.every((input, index) => {
-        const item = items[index];
-        return input.id === item.id &&
-          input.title === item.title &&
-          input.teacherIds === item.teacherIds;
-      });
-    if (inputsMatch && cached) return cached.options;
-
-    const descendantIds = editingItemId === null
-      ? new Set<number>()
-      : getDescendantIds(items, editingItemId);
-
-    const options = items
-      .filter((item) => item.id !== editingItemId && !descendantIds.has(item.id))
-      .map(({ id, title }) => ({ id, title }))
-      .sort((first, second) => first.title.localeCompare(second.title));
-    teacherOptionsCache.current = {
-      editingItemId,
-      inputs: items.map(({ id, title, teacherIds }) => ({ id, title, teacherIds })),
-      options,
-    };
-    return options;
-  }, [items, editingItemId]);
+  const teacherOptions = useMemo(
+    () => getTeacherOptions(items, editingItemId),
+    [items, editingItemId]
+  );
 
   const ticks = useMemo(() => {
     const result: number[] = [];
@@ -1640,93 +1679,14 @@ export default function Timeline() {
           touchAction: "none",
         }}
       >
-        {pointerX !== null &&
-          pointerYear !== null && (
-          <>
-            <div
-              style={{
-                position:
-                  "absolute",
-                left:
-                  `${pointerX}px`,
-                top: 0,
-                width: "1px",
-                height: "calc(100% - 40px)",
-                marginTop: "40px",
-                backgroundColor:
-                  "rgba(255,255,255,0.09)",
-                pointerEvents:
-                  "none",
-                zIndex: 8,
-              }}
-            />
-
-            <div
-              style={{
-                position:
-                  "absolute",
-                left:
-                  `${pointerX}px`,
-                top: `${pointerYearBannerTop}px`,
-                transform:
-                  "translateX(-50%)",
-                padding:
-                  "5px 12px",
-                width:
-                  "220px",
-                maxWidth:
-                  "calc(100vw - 24px)",
-                boxSizing:
-                  "border-box",
-                textAlign: "center",
-                backgroundColor:
-                  "rgba(20,31,44,0.96)",
-                border:
-                  "1px solid rgba(255,255,255,0.24)",
-                borderRadius:
-                  "4px",
-                color: "white",
-                fontSize: "14px",
-                lineHeight: "18px",
-                display: "flex",
-                alignItems: "center",
-                justifyContent:
-                  "space-between",
-                gap: "10px",
-                whiteSpace: "nowrap",
-                pointerEvents:
-                  "none",
-                zIndex: 9,
-              }}
-            >
-              <span>
-                {renderHijriYearLabel(
-                  Math.round(pointerYear)
-                )}
-              </span>
-              <span
-                style={{
-                  position: "absolute",
-                  left: "50%",
-                  top: "50%",
-                  transform:
-                    "translate(-50%, -50%)",
-                  width: "8px",
-                  height: "8px",
-                  flex: "0 0 auto",
-                  borderRadius: "50%",
-                  backgroundColor:
-                    "#f5a623",
-                }}
-              />
-              <span>
-                {renderTimelineYearLabel(
-                  Math.round(pointerYear)
-                )}
-              </span>
-            </div>
-          </>
-        )}
+        <PointerOverlay
+          viewportWidth={viewportWidth}
+          pixelsPerYear={pixelsPerYear}
+          zoom={zoom}
+          bannerTop={pointerYearBannerTop}
+          renderHijriYear={renderHijriYearLabel}
+          renderTimelineYear={renderTimelineYearLabel}
+        />
 
         {/* ───────────────────────────── */}
         {/* MOVING TIMELINE CANVAS */}
@@ -1766,6 +1726,7 @@ export default function Timeline() {
           {/* ─────────────────────────── */}
 
           <div
+            ref={setAxisElement}
             style={{
               position:
                 "absolute",
@@ -1789,6 +1750,20 @@ export default function Timeline() {
           {/* YEAR TICKS */}
           {/* ─────────────────────────── */}
 
+          {/* Ticks live in world x and are panned by transform; the layer is shifted vertically only while the axis is pinned or moving. */}
+          <div
+            ref={setTicksElement}
+            style={{
+              position: "absolute",
+              left: 0,
+              top: 0,
+              width: 0,
+              height: 0,
+              transform: `translate3d(${-viewPosition * pixelsPerYear * zoom}px, 0px, 0)`,
+              pointerEvents: "none",
+              zIndex: axisNeedsPinning ? 7 : 2,
+            }}
+          >
           {ticks.map(
             (year) => {
               const date:
@@ -1807,7 +1782,7 @@ export default function Timeline() {
                     };
 
               const x =
-                getRelativePosition(
+                getWorldPosition(
                   date
                 );
 
@@ -1835,7 +1810,7 @@ export default function Timeline() {
                       "translateX(-50%)",
                     pointerEvents:
                       "none",
-                    zIndex: axisNeedsPinning ? 7 : 2,
+                    zIndex: 0,
                   }}
                 >
                   {isMajor && (
@@ -1915,11 +1890,25 @@ export default function Timeline() {
               );
             }
           )}
+          </div>
 
           {/* ─────────────────────────── */}
           {/* TIMELINE ITEMS */}
           {/* ─────────────────────────── */}
 
+          {/* World layer: z-index 5 keeps it above unpinned ticks (2) and below the pinned axis band (6, 7). */}
+          <div
+            ref={setWorldElement}
+            style={{
+              position: "absolute",
+              left: 0,
+              top: 0,
+              width: 0,
+              height: 0,
+              transform: `translate3d(${-viewPosition * pixelsPerYear * zoom}px, ${axisY}px, 0)`,
+              zIndex: 5,
+            }}
+          >
           {normalizedLineageRoutes.length > 0 && (
             <svg
               aria-hidden="true"
@@ -1927,17 +1916,17 @@ export default function Timeline() {
               height="1"
               style={{ position: "absolute", left: 0, top: 0, overflow: "visible", pointerEvents: "none", zIndex: 4 }}
             >
-              <g transform={`translate(${-routeHorizontalOffset} ${axisY})`}>
+              <g transform={`scale(${zoom / lineageZoom})`}>
                 {normalizedLineageBounds && (
                   <rect
                     x={normalizedLineageBounds.left}
                     y={normalizedLineageBounds.top}
                     width={normalizedLineageBounds.right - normalizedLineageBounds.left}
                     height={normalizedLineageBounds.bottom - normalizedLineageBounds.top}
-                    rx={6 * zoom}
+                    rx={6 * lineageZoom}
                     fill="rgba(245,166,35,0.06)"
                     stroke="#f5a623"
-                    strokeWidth={Math.max(2, 2 * zoom)}
+                    strokeWidth={Math.max(2, 2 * lineageZoom)}
                   />
                 )}
                 {lineageRouteElements}
@@ -1948,7 +1937,7 @@ export default function Timeline() {
           {renderItems.map(
             (item) => {
               const x =
-                getRelativePosition(
+                getWorldPosition(
                   item.startDate
                 );
 
@@ -1960,7 +1949,7 @@ export default function Timeline() {
                 getItemY(
                   item,
                   row,
-                  axisY,
+                  0,
                   zoom
                 );
 
@@ -1975,12 +1964,12 @@ export default function Timeline() {
                 item.endDate
               ) {
                 const startX =
-                  getRelativePosition(
+                  getWorldPosition(
                     item.startDate
                   );
 
                 const endX =
-                  getRelativePosition(
+                  getWorldPosition(
                     item.endDate
                   );
 
@@ -2011,6 +2000,7 @@ export default function Timeline() {
               );
             }
           )}
+          </div>
         </div>
       </div>
 
@@ -2032,7 +2022,7 @@ export default function Timeline() {
             overflow: "visible",
           }}
         >
-          {detailWindowPosition.showConnector && (
+          {detailWindowPosition.showConnector && !isDragging && (
           <path
             d={`M ${detailWindowPosition.x} ${detailWindowPosition.boxEdgeY} L ${detailWindowPosition.x} ${(detailWindowPosition.boxEdgeY + detailWindowPosition.itemEdgeY) / 2} L ${detailWindowPosition.itemX} ${(detailWindowPosition.boxEdgeY + detailWindowPosition.itemEdgeY) / 2} L ${detailWindowPosition.itemX} ${detailWindowPosition.itemEdgeY}`}
             fill="none"
@@ -2430,16 +2420,13 @@ export default function Timeline() {
       {showAddForm && (
         <AddItemForm
           key={editingItemId ?? "new"}
-          form={form}
-          tagPositionPreference={getTagItemPosition(tags, form.tags)}
+          initialForm={formSeed}
+          handleRef={formHandleRef}
           teacherOptions={teacherOptions}
-          onChange={updateForm}
           isEditing={editingItemId !== null}
           availableTags={tags}
-          newTagName={newTagName}
-          newTagColor={newTagColor}
-          setNewTagName={setNewTagName}
-          setNewTagColor={setNewTagColor}
+          onCommit={handleCommitEditedItem}
+          onDirty={clearDataError}
           onSubmit={handleAddItem}
           onCreateTag={handleCreateTag}
           onDuplicate={duplicateEditingItem}

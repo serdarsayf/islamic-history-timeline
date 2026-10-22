@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import { requireUser } from "../../../../lib/supabase/server";
+import { createSupabaseServerClient, requireUser } from "../../../../lib/supabase/server";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
 export async function GET(_request: Request, context: RouteContext) {
-  const { supabase } = await requireUser();
+  const supabase = await createSupabaseServerClient();
   const { id } = await context.params;
-  const { data, error } = await supabase.from("timelines").select("*, timeline_items(*, timeline_item_tags(tag_id, timeline_tags(*))), timeline_tags(*)").eq("id", id).single();
+  const { data, error } = await supabase.from("timelines").select("*, timeline_items(*, timeline_item_tags(tag_id)), timeline_tags(*)").eq("id", id).single();
   if (error) return NextResponse.json({ error: error.message }, { status: 404 });
   return NextResponse.json({ timeline: data });
 }

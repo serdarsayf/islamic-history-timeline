@@ -5,10 +5,89 @@ import {
   getItemRows,
   getItemRowsAroundLineage,
   getLineageClearanceRows,
+  haveSameItemLayout,
+  isItemInRenderRange,
   optimizeLineageRows,
   scoreLineageRows,
 } from "./geometry";
 import type { TimelineItem } from "./types";
+import { dateToNumber } from "../timeline";
+
+function cullItem(overrides: Partial<TimelineItem>): TimelineItem {
+  return {
+    id: 1,
+    type: "event",
+    title: "Fifteen chars!!",
+    description: "",
+    color: "#fff",
+    textColor: "#000",
+    tags: [],
+    startDate: { year: 1000, era: "CE" },
+    position: "above",
+    ...overrides,
+  };
+}
+
+test("item layout comparison ignores colour and description but not layout or lineage fields", () => {
+  const base = cullItem({ teacherIds: [2], grandTeacherIds: [3] });
+  const recoloured = { ...base, color: "#000", textColor: "#111", description: "changed", title: "Fifteen chars??" };
+
+  assert.equal(haveSameItemLayout([base], [recoloured]), true);
+  assert.equal(haveSameItemLayout([base], [{ ...base, title: "Longer title here" }]), false);
+  assert.equal(haveSameItemLayout([base], [{ ...base, position: "below" }]), false);
+  assert.equal(haveSameItemLayout([base], [{ ...base, startDate: { year: 1001, era: "CE" } }]), false);
+  assert.equal(haveSameItemLayout([base], [{ ...base, teacherIds: [4] }]), false);
+  assert.equal(haveSameItemLayout([base], [{ ...base, teacherIds: [4] }], false), true);
+  assert.equal(haveSameItemLayout([base], [base, base]), false);
+});
+
+test("render range includes an event just outside the years whose label reaches the viewport", () => {
+  // At 0.5 px/year and zoom 5 the 15-character label has a half-width of about 470 px.
+  const viewStart = dateToNumber({ year: 1, era: "CE" });
+  const item = cullItem({ startDate: { year: 1250, era: "CE" } });
+
+  assert.equal(isItemInRenderRange(viewStart, viewStart + 999, 0.5, 5, item), true);
+});
+
+test("render range excludes an event far outside the viewport", () => {
+  const item = cullItem({ startDate: { year: 9000, era: "CE" } });
+
+  assert.equal(isItemInRenderRange(1, 1000, 0.5, 5, item), false);
+});
+
+test("render range includes a short period ending left of the viewport whose title reaches into view", () => {
+  const item = cullItem({
+    type: "period",
+    title: "A very long period title",
+    startDate: { year: 100, era: "CE" },
+    endDate: { year: 110, era: "CE" },
+  });
+  const viewStart = dateToNumber({ year: 1000, era: "CE" });
+
+  assert.equal(isItemInRenderRange(viewStart, viewStart + 1000, 4, 1, item), false);
+  assert.equal(isItemInRenderRange(viewStart, viewStart + 1000, 0.25, 1, item), true);
+});
+
+test("render range matches the old year-buffer filter at 4 px/year and zoom 1", () => {
+  const viewStart = dateToNumber({ year: 1000, era: "CE" });
+  const viewEnd = viewStart + 400;
+  const oldFilter = (item: TimelineItem) => {
+    const start = dateToNumber(item.startDate);
+    const end = item.endDate ? dateToNumber(item.endDate) : start;
+    return end >= viewStart - 100 && start <= viewEnd + 100;
+  };
+  const candidates = [
+    cullItem({ title: "Battle", startDate: { year: 1200, era: "CE" } }),
+    cullItem({ title: "Treaty", startDate: { year: 1010, era: "CE" } }),
+    cullItem({ title: "Founding", startDate: { year: 3000, era: "CE" } }),
+    cullItem({ title: "Empire", type: "period", startDate: { year: 1100, era: "CE" }, endDate: { year: 1300, era: "CE" } }),
+    cullItem({ title: "Dynasty", type: "period", startDate: { year: 2000, era: "CE" }, endDate: { year: 2200, era: "CE" } }),
+  ];
+
+  for (const item of candidates) {
+    assert.equal(isItemInRenderRange(viewStart, viewEnd, 4, 1, item), oldFilter(item), item.title);
+  }
+});
 
 const items: TimelineItem[] = [
   {

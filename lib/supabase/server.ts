@@ -28,11 +28,12 @@ export async function createSupabaseServerClient() {
 
 export async function requireUser() {
   const supabase = await createSupabaseServerClient();
-  const { data, error } = await supabase.auth.getUser();
+  // Verifies locally when the project signs JWTs asymmetrically; otherwise auth-js falls back to a getUser() call.
+  const { data, error } = await supabase.auth.getClaims();
 
-  if (error || !data.user) {
+  if (error || !data?.claims.sub) {
     return { supabase, user: null };
   }
 
-  return { supabase, user: data.user };
+  return { supabase, user: { id: data.claims.sub, email: data.claims.email } };
 }

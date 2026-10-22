@@ -143,6 +143,68 @@ function getItemRanges(
   });
 }
 
+function isSameIdList(first: number[] | undefined, second: number[] | undefined) {
+  if (first === second) return true;
+  if (!first || !second || first.length !== second.length) return false;
+  return first.every((id, index) => id === second[index]);
+}
+
+// Compares only the fields that affect layout; includeLineage adds teacher and grand-teacher ids.
+export function isSameItemLayout(first: TimelineItem, second: TimelineItem, includeLineage = true) {
+  if (first === second) return true;
+  return first.id === second.id &&
+    first.type === second.type &&
+    first.title.length === second.title.length &&
+    first.position === second.position &&
+    dateToNumber(first.startDate) === dateToNumber(second.startDate) &&
+    (first.endDate ? dateToNumber(first.endDate) : null) ===
+      (second.endDate ? dateToNumber(second.endDate) : null) &&
+    (!includeLineage || (
+      isSameIdList(first.teacherIds, second.teacherIds) &&
+      isSameIdList(first.grandTeacherIds, second.grandTeacherIds)
+    ));
+}
+
+export function haveSameItemLayout(first: TimelineItem[], second: TimelineItem[], includeLineage = true) {
+  if (first === second) return true;
+  if (first.length !== second.length) return false;
+  for (let index = 0; index < first.length; index += 1) {
+    if (!isSameItemLayout(first[index], second[index], includeLineage)) return false;
+  }
+  return true;
+}
+
+const RENDER_MARGIN_PX = 200;
+
+// Mirrors the label widths in TimelineItemVisual (11px per character and 22px padding, scaled by zoom).
+export function isItemInRenderRange(
+  viewStartYear: number,
+  viewEndYear: number,
+  pixelsPerYear: number,
+  zoom: number,
+  item: TimelineItem
+) {
+  const marginYears = RENDER_MARGIN_PX / (pixelsPerYear * zoom);
+  const start = dateToNumber(item.startDate);
+  let left: number;
+  let right: number;
+
+  if (item.type === "event") {
+    const halfWidthYears = (item.title.length * 11 + 22) / 2 / pixelsPerYear;
+    left = start - halfWidthYears;
+    right = start + halfWidthYears;
+  } else {
+    const end = item.endDate ? dateToNumber(item.endDate) : start;
+    left = Math.min(start, end);
+    right = Math.max(
+      Math.max(start, end) + 2 / pixelsPerYear,
+      start + (10 + item.title.length * 11) / pixelsPerYear
+    );
+  }
+
+  return right >= viewStartYear - marginYears && left <= viewEndYear + marginYears;
+}
+
 export function getLineageClearanceRows(
   bounds: { top: number; bottom: number },
   axisY: number,

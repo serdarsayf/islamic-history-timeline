@@ -1,19 +1,38 @@
 import { NextResponse } from "next/server";
-import { requireUser } from "../../../../../lib/supabase/server";
+import { createSupabaseServerClient, requireUser } from "../../../../../lib/supabase/server";
 import { isCalendarEra, isChronologicalRange, isPositiveWholeYear } from "../../../../../lib/timeline/validation";
 
 type Context = { params: Promise<{ id: string }> };
 
-export async function GET(_request: Request, context: Context) {
-  const { supabase } = await requireUser();
+// Supabase caps a response at 1,000 rows, so larger timelines are read in pages.
+const MAX_PAGE_SIZE = 1000;
+
+function readPositiveInt(value: string | null, fallback: number) {
+  if (value === null) return fallback;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : null;
+}
+
+export async function GET(request: Request, context: Context) {
+  const { searchParams } = new URL(request.url);
+  const page = readPositiveInt(searchParams.get("page"), 1);
+  const pageSize = readPositiveInt(searchParams.get("pageSize"), MAX_PAGE_SIZE);
+  if (page === null || pageSize === null || pageSize > MAX_PAGE_SIZE) {
+    return NextResponse.json({ error: `page must be 1 or more and pageSize between 1 and ${MAX_PAGE_SIZE}.` }, { status: 400 });
+  }
+
+  const supabase = await createSupabaseServerClient();
   const { id } = await context.params;
+  const from = (page - 1) * pageSize;
   const { data, error } = await supabase
     .from("timeline_items")
-    .select("id, type, name, description, start_year, start_era, end_year, end_era, box_color, text_color, timeline_item_tags(tag_id)")
+    .select("id, type, name, description, start_year, start_era, end_year, end_era, box_color, text_color, text_position, timeline_item_tags(tag_id)")
     .eq("timeline_id", id)
-    .order("start_year");
+    .order("start_pos")
+    .order("id")
+    .range(from, from + pageSize - 1);
   if (error) return NextResponse.json({ error: error.message }, { status: 404 });
-  return NextResponse.json({ items: data });
+  return NextResponse.json({ items: data, nextPage: data.length === pageSize ? page + 1 : null });
 }
 
 export async function POST(request: Request, context: Context) {

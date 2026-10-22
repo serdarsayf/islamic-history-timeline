@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
-import { requireUser } from "../../../../../lib/supabase/server";
+import { createSupabaseServerClient, requireUser } from "../../../../../lib/supabase/server";
 
 type Context = { params: Promise<{ id: string }> };
 
 export async function GET(_request: Request, context: Context) {
-  const { supabase } = await requireUser();
+  const supabase = await createSupabaseServerClient();
   const { id } = await context.params;
   const { data, error } = await supabase.from("timeline_comments").select("id, timeline_id, parent_id, body, created_at").eq("timeline_id", id).order("created_at");
   if (error) return NextResponse.json({ error: error.message }, { status: 404 });

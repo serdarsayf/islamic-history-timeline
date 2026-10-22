@@ -1,63 +1,24 @@
 import { useCallback, useSyncExternalStore } from "react";
 import { defaultTags, normalizeTimelineTags } from "../lib/timeline/tags";
+import { createPersistQueue } from "../lib/timeline/persistQueue";
 import type { TimelineTag } from "../lib/timeline/types";
 
 const storageKey = "timeline-tags";
 const updateEvent = "timeline-tags-updated";
 let cachedRaw: string | null = null;
 let cachedTags: TimelineTag[] | null = null;
-let writeTimer: ReturnType<typeof setTimeout> | null = null;
-let pendingTags: TimelineTag[] | null = null;
-let unloadHandler: (() => void) | null = null;
 
-function removeUnloadHandler() {
-  if (unloadHandler === null) return;
-  window.removeEventListener("beforeunload", unloadHandler);
-  unloadHandler = null;
-}
-
-function flushPendingWrite() {
-  if (writeTimer !== null) clearTimeout(writeTimer);
-  writeTimer = null;
-  const toWrite = pendingTags;
-  pendingTags = null;
-  if (toWrite !== null) {
-    try {
-      window.localStorage.setItem(storageKey, JSON.stringify(toWrite));
-      cachedRaw = null;
-    } catch {
-      // Ignore quota or storage failures.
-    }
-  }
-  removeUnloadHandler();
-}
-
-function schedulePersist(tags: TimelineTag[]) {
-  pendingTags = tags;
-  if (writeTimer !== null) clearTimeout(writeTimer);
-  writeTimer = setTimeout(() => {
-    writeTimer = null;
-    const toWrite = pendingTags;
-    pendingTags = null;
-    if (toWrite !== null) {
-      try {
-        window.localStorage.setItem(storageKey, JSON.stringify(toWrite));
-        cachedRaw = null;
-      } catch {
-        // Ignore quota or storage failures.
-      }
-    }
-    removeUnloadHandler();
-  }, 150);
-
-  if (unloadHandler === null) {
-    unloadHandler = flushPendingWrite;
-    window.addEventListener("beforeunload", unloadHandler);
-  }
-}
+const persistQueue = createPersistQueue<TimelineTag[]>({
+  key: storageKey,
+  label: "timeline tags",
+  onWritten(raw, tags) {
+    cachedRaw = raw;
+    cachedTags = tags;
+  },
+});
 
 function readTags() {
-  if (pendingTags !== null && cachedTags !== null) return cachedTags;
+  if (persistQueue.hasPending() && cachedTags !== null) return cachedTags;
   try {
     const stored = window.localStorage.getItem(storageKey);
     if (stored === cachedRaw && cachedTags) return cachedTags;
@@ -78,7 +39,7 @@ function readTags() {
 function subscribe(onChange: () => void) {
   const handleStorage = (event: StorageEvent) => {
     if (event.key === storageKey) {
-      if (pendingTags === null) {
+      if (!persistQueue.hasPending()) {
         cachedRaw = null;
         cachedTags = null;
       }
@@ -86,7 +47,6 @@ function subscribe(onChange: () => void) {
     }
   };
   const handleUpdate = () => {
-    cachedRaw = null;
     onChange();
   };
   window.addEventListener("storage", handleStorage);
@@ -104,9 +64,8 @@ export function useTimelineTags() {
     const nextTags = normalizeTimelineTags(
       typeof update === "function" ? update(tags) : update
     );
-    cachedRaw = null;
     cachedTags = nextTags;
-    schedulePersist(nextTags);
+    persistQueue.schedule(nextTags);
     window.dispatchEvent(new Event(updateEvent));
   }, [tags]);
 

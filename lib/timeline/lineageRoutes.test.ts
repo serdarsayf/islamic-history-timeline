@@ -31,6 +31,108 @@ const route = (nodes: LineageNode[], links: [number, number][]) =>
     1
   );
 
+// Nodes positioned the way Timeline.tsx does: x scales with zoom, row distance scales with zoom.
+function zoomedNode(
+  id: number,
+  side: "above" | "below",
+  row: number,
+  year: number,
+  zoom: number,
+  title = "Item",
+  endYear?: number
+): LineageNode {
+  const pixelsPerYear = 0.5;
+  const distance = getItemDistance(row, zoom);
+  const x = year * pixelsPerYear * zoom;
+  return {
+    item: {
+      ...initialItems[endYear === undefined ? 0 : 1],
+      id,
+      title,
+      position: side,
+    },
+    row,
+    x,
+    endX: endYear === undefined ? x : endYear * pixelsPerYear * zoom,
+    y: side === "above" ? -distance : distance,
+  };
+}
+
+const zoomSamples: {
+  name: string;
+  build: (zoom: number) => LineageNode[];
+  links: [number, number][];
+}[] = [
+  {
+    name: "chain on one side",
+    build: (zoom) => [
+      zoomedNode(1, "above", 0, 100, zoom),
+      zoomedNode(2, "above", 1, 700, zoom),
+      zoomedNode(3, "above", 0, 1300, zoom),
+    ],
+    links: [[1, 2], [2, 3]],
+  },
+  {
+    name: "fan out across the axis",
+    build: (zoom) => [
+      zoomedNode(1, "above", 0, 100, zoom, "Teacher"),
+      zoomedNode(2, "below", 0, 900, zoom),
+      zoomedNode(3, "above", 1, 1200, zoom),
+      zoomedNode(4, "below", 1, 1500, zoom),
+    ],
+    links: [[1, 2], [1, 3], [1, 4]],
+  },
+  {
+    name: "periods with a blocker",
+    build: (zoom) => [
+      zoomedNode(1, "below", 0, 100, zoom, "Period", 800),
+      zoomedNode(2, "below", 0, 1000, zoom, "Blocker"),
+      zoomedNode(3, "below", 1, 1600, zoom),
+      zoomedNode(4, "above", 0, 1100, zoom, "Student"),
+    ],
+    links: [[1, 3], [1, 4]],
+  },
+];
+
+test("routes computed at zoom 1 scale to match routes at other zooms except arrow size", () => {
+  for (const sample of zoomSamples) {
+    const links = sample.links.map(([teacherId, studentId]) => ({ teacherId, studentId }));
+    const base = getLineageRoutes(sample.build(1), links, 0, 1);
+
+    for (const zoom of [0.25, 0.5, 2, 5]) {
+      const actual = getLineageRoutes(sample.build(zoom), links, 0, zoom);
+      assert.equal(actual.length, base.length, `${sample.name} @${zoom}`);
+      actual.forEach((result, index) => {
+        const expected = base[index];
+        assert.equal(result.key, expected.key);
+        result.points.forEach((point, pointIndex) => {
+          assert.ok(Math.abs(point.x - expected.points[pointIndex].x * zoom) < 1e-6, `${sample.name} @${zoom} x`);
+          assert.ok(Math.abs(point.y - expected.points[pointIndex].y * zoom) < 1e-6, `${sample.name} @${zoom} y`);
+        });
+        assert.equal(result.arrow.angle, expected.arrow.angle);
+        assert.deepEqual(
+          result.segments.map(({ opacity }) => opacity),
+          expected.segments.map(({ opacity }) => opacity),
+          `${sample.name} @${zoom} opacities`
+        );
+      });
+    }
+  }
+});
+
+test("arrow size has a 3px floor, so scaled zoom-1 routes would draw the wrong arrow at low zoom", () => {
+  const links = [{ teacherId: 1, studentId: 2 }];
+  const nodes = (zoom: number) => [
+    zoomedNode(1, "above", 0, 100, zoom),
+    zoomedNode(2, "below", 2, 1200, zoom),
+  ];
+  const [base] = getLineageRoutes(nodes(1), links, 0, 1);
+  const [small] = getLineageRoutes(nodes(0.25), links, 0, 0.25);
+
+  assert.equal(small.arrow.size, 3);
+  assert.ok(Math.abs(small.arrow.size - base.arrow.size * 0.25) > 1);
+});
+
 test("connectors use only horizontal and vertical segments", () => {
   const [result] = route([node(1, "above", 1, 100), node(2, "below", 0, 600)], [[1, 2]]);
 

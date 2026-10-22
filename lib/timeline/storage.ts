@@ -3,59 +3,23 @@ import type { HistoricalDate } from "../timeline";
 import { isCalendarEra, isChronologicalRange, isPositiveWholeYear } from "./validation";
 import { pruneTeacherIds } from "./lineage";
 
+import { createPersistQueue } from "./persistQueue";
+
+export { onPersistError } from "./persistQueue";
+
 const storageKey = "timeline-items";
 const storageEvent = "timeline-items-updated";
 let cachedRaw: string | null = null;
 let cachedItems: TimelineItem[] | null = null;
-let writeTimer: ReturnType<typeof setTimeout> | null = null;
-let pendingItems: TimelineItem[] | null = null;
-let unloadHandler: (() => void) | null = null;
 
-function removeUnloadHandler() {
-  if (unloadHandler === null) return;
-  window.removeEventListener("beforeunload", unloadHandler);
-  unloadHandler = null;
-}
-
-function flushPendingWrite() {
-  if (writeTimer !== null) clearTimeout(writeTimer);
-  writeTimer = null;
-  const toWrite = pendingItems;
-  pendingItems = null;
-  if (toWrite !== null) {
-    try {
-      window.localStorage.setItem(storageKey, JSON.stringify(toWrite));
-      cachedRaw = null;
-    } catch {
-      // Ignore quota or storage failures.
-    }
-  }
-  removeUnloadHandler();
-}
-
-function schedulePersist(items: TimelineItem[]) {
-  pendingItems = items;
-  if (writeTimer !== null) clearTimeout(writeTimer);
-  writeTimer = setTimeout(() => {
-    writeTimer = null;
-    const toWrite = pendingItems;
-    pendingItems = null;
-    if (toWrite !== null) {
-      try {
-        window.localStorage.setItem(storageKey, JSON.stringify(toWrite));
-        cachedRaw = null;
-      } catch {
-        // Ignore quota or storage failures.
-      }
-    }
-    removeUnloadHandler();
-  }, 150);
-
-  if (unloadHandler === null) {
-    unloadHandler = flushPendingWrite;
-    window.addEventListener("beforeunload", unloadHandler);
-  }
-}
+const persistQueue = createPersistQueue<TimelineItem[]>({
+  key: storageKey,
+  label: "timeline items",
+  onWritten(raw, items) {
+    cachedRaw = raw;
+    cachedItems = items;
+  },
+});
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -162,7 +126,7 @@ export function parseStoredItems(stored: string | null, fallback: TimelineItem[]
 
 export function readStoredItems(fallback: TimelineItem[]) {
   if (typeof window === "undefined") return fallback;
-  if (pendingItems !== null && cachedItems !== null) return cachedItems;
+  if (persistQueue.hasPending() && cachedItems !== null) return cachedItems;
 
   try {
     const stored = window.localStorage.getItem(storageKey);
@@ -182,16 +146,15 @@ export function readStoredItems(fallback: TimelineItem[]) {
 }
 
 export function writeStoredItems(items: TimelineItem[]) {
-  cachedRaw = null;
   cachedItems = items;
-  schedulePersist(items);
+  persistQueue.schedule(items);
   window.dispatchEvent(new Event(storageEvent));
 }
 
 export function subscribeToStoredItems(onChange: () => void) {
   const handleStorage = (event: StorageEvent) => {
     if (event.key === storageKey) {
-      if (pendingItems === null) {
+      if (!persistQueue.hasPending()) {
         cachedRaw = null;
         cachedItems = null;
       }
@@ -199,7 +162,6 @@ export function subscribeToStoredItems(onChange: () => void) {
     }
   };
   const handleTimelineUpdate = () => {
-    cachedRaw = null;
     onChange();
   };
 

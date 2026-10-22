@@ -1,8 +1,9 @@
 import dynamic from "next/dynamic";
-import { memo, useCallback, useMemo, useState } from "react";
-import type { Dispatch, FormEvent, SetStateAction } from "react";
-import type { ItemFormState, TimelineTag } from "../lib/timeline/types";
-import { getTagDepth } from "../lib/timeline/tags";
+import { memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import type { FormEvent, Ref } from "react";
+import type { ItemFormState, TimelineItem, TimelineTag } from "../lib/timeline/types";
+import { buildItemDataWithTagPosition } from "../lib/timeline/itemForm";
+import { getTagDepth, getTagItemPosition } from "../lib/timeline/tags";
 import { useEscapeLayer } from "./useEscapeLayer";
 
 const DatePickerPanel = dynamic(() => import("./DatePickerPanel"), {
@@ -53,19 +54,27 @@ function parseDateText(text: string) {
   return { year: yearToken, month, day };
 }
 
+export type AddItemFormHandle = {
+  // Patches the draft, for changes that originate outside the form (tag rename or delete).
+  update: (patch: (form: ItemFormState) => Partial<ItemFormState>) => void;
+  flush: () => void;
+  discard: () => void;
+};
+
+const COMMIT_DELAY_MS = 250;
+
 type AddItemFormProps = {
-  form: ItemFormState;
-  tagPositionPreference: "above" | "below" | null;
+  initialForm: ItemFormState;
+  handleRef?: Ref<AddItemFormHandle>;
   teacherOptions: { id: number; title: string }[];
-  onChange: (patch: Partial<ItemFormState>) => void;
   isEditing: boolean;
   availableTags: TimelineTag[];
-  newTagName: string;
-  newTagColor: string;
-  setNewTagName: Dispatch<SetStateAction<string>>;
-  setNewTagColor: Dispatch<SetStateAction<string>>;
-  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
-  onCreateTag: () => void;
+  // Called with the debounced, validated draft while editing an existing item.
+  onCommit: (itemData: Omit<TimelineItem, "id">) => void;
+  onDirty: () => void;
+  onSubmit: (form: ItemFormState) => void;
+  // Returns the created tag's name, or null if it could not be created.
+  onCreateTag: (name: string, color: string) => string | null;
   onDuplicate: () => void;
   onDelete: () => void;
   onClose: () => void;
@@ -91,16 +100,13 @@ const labelStyle = {
 };
 
 function AddItemFormImpl({
-  form,
-  tagPositionPreference,
+  initialForm,
+  handleRef,
   teacherOptions,
-  onChange,
   isEditing,
   availableTags,
-  newTagName,
-  newTagColor,
-  setNewTagName,
-  setNewTagColor,
+  onCommit,
+  onDirty,
   onSubmit,
   onCreateTag,
   onDuplicate,
@@ -108,6 +114,74 @@ function AddItemFormImpl({
   onClose,
   onBack,
 }: AddItemFormProps) {
+  const [form, setForm] = useState(initialForm);
+  const [newTagName, setNewTagName] = useState("");
+  const [newTagColor, setNewTagColor] = useState("#ef4444");
+  const draftRef = useRef(form);
+  const dirtyRef = useRef(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestProps = useRef({ isEditing, availableTags, onCommit, onDirty });
+  const tagPositionPreference = getTagItemPosition(availableTags, form.tags);
+
+  useEffect(() => {
+    latestProps.current = { isEditing, availableTags, onCommit, onDirty };
+  });
+
+  const flush = useCallback(() => {
+    if (timerRef.current !== null) clearTimeout(timerRef.current);
+    timerRef.current = null;
+    if (!dirtyRef.current) return;
+    dirtyRef.current = false;
+
+    const { isEditing: editing, availableTags: tags, onCommit: commit } = latestProps.current;
+    if (!editing) return;
+    const itemData = buildItemDataWithTagPosition(draftRef.current, tags);
+    if (itemData) commit(itemData);
+  }, []);
+
+  const discard = useCallback(() => {
+    if (timerRef.current !== null) clearTimeout(timerRef.current);
+    timerRef.current = null;
+    dirtyRef.current = false;
+  }, []);
+
+  const applyPatch = useCallback((patch: Partial<ItemFormState>) => {
+    const next = { ...draftRef.current, ...patch };
+    draftRef.current = next;
+    dirtyRef.current = true;
+    setForm(next);
+    latestProps.current.onDirty();
+    if (timerRef.current !== null) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(flush, COMMIT_DELAY_MS);
+  }, [flush]);
+  const onChange = applyPatch;
+
+  useImperativeHandle(handleRef, () => ({
+    update: (patch) => applyPatch(patch(draftRef.current)),
+    flush,
+    discard,
+  }), [applyPatch, flush, discard]);
+
+  // Closing the form or opening another item remounts it, so pending edits are saved here.
+  useEffect(() => flush, [flush]);
+
+  const handleFormSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    flush();
+    onSubmit(draftRef.current);
+  };
+
+  const handleCreateTag = () => {
+    const tagName = onCreateTag(newTagName, newTagColor);
+    if (tagName === null) return;
+    const current = draftRef.current;
+    applyPatch({
+      tags: [...current.tags, tagName],
+      // Adopt the first tag's color as the item's box and text color.
+      ...(current.tags.length === 0 ? { color: newTagColor, textColor: newTagColor } : {}),
+    });
+    setNewTagName("");
+  };
   const [showTagCreator, setShowTagCreator] = useState(false);
   const [showTagPicker, setShowTagPicker] = useState(false);
   const [openDateField, setOpenDateField] = useState<"start" | "end" | null>(null);
@@ -209,7 +283,7 @@ function AddItemFormImpl({
         </div>
       </div>
 
-      <form onSubmit={onSubmit}>
+      <form onSubmit={handleFormSubmit} onBlur={flush}>
         <label style={labelStyle}>
           Type
           <select className="ui-field" value={form.itemType} onChange={(event) => onChange({ itemType: event.target.value as ItemFormState["itemType"] })} style={{ ...fieldStyle, marginTop: "5px" }}>
@@ -289,7 +363,7 @@ function AddItemFormImpl({
           {showTagCreator && <div style={{ display: "flex", gap: "5px", marginTop: "7px" }}>
             <input className="ui-field" value={newTagName} onChange={(event) => setNewTagName(event.target.value)} placeholder="Tag name" style={{ ...fieldStyle, flex: 1 }} />
             <input type="color" value={newTagColor} onChange={(event) => setNewTagColor(event.target.value)} aria-label="New tag color" style={{ width: "38px", padding: 0, border: "none", background: "transparent", cursor: "pointer" }} />
-            <button type="button" onClick={onCreateTag} style={{ padding: "7px 9px", border: "1px solid #cbd5e1", borderRadius: "4px", backgroundColor: "white", cursor: "pointer" }}>Add</button>
+            <button type="button" onClick={handleCreateTag} style={{ padding: "7px 9px", border: "1px solid #cbd5e1", borderRadius: "4px", backgroundColor: "white", cursor: "pointer" }}>Add</button>
           </div>}
           {showTagPicker && <div style={{ display: "flex", flexDirection: "column", gap: "5px", marginTop: "7px", padding: "8px", border: "1px solid #e2e8f0", borderRadius: "4px", backgroundColor: "white" }}>
             {availableTags.length === 0 ? <span style={{ color: "#64748b", fontSize: "12px" }}>No tags created yet.</span> : availableTagRows.map(({ tag, depth }) => {
