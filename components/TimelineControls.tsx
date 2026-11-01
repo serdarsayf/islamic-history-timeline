@@ -147,14 +147,14 @@ function TimelineControlsImpl({
       <div>
         <span className="control-heading">Items</span>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "6px" }}>
-        <button className="ui-button" type="button" onClick={() => setEditMode((current) => { if (current) setShowItemList(false); return !current; })} style={{ ...buttonStyle, backgroundColor: editMode ? "#dbeafe" : "white" }}>
+        <button className="ui-button" type="button" data-tooltip="Turn timeline editing tools on or off" onClick={() => setEditMode((current) => { if (current) setShowItemList(false); return !current; })} style={{ ...buttonStyle, backgroundColor: editMode ? "#dbeafe" : "white" }}>
           {editMode ? "Editing" : "Edit"}
         </button>
-        <button className="ui-button" type="button" onClick={onToggleAddForm} style={buttonStyle}>
+        <button className="ui-button" type="button" data-tooltip="Create a new timeline item" onClick={onToggleAddForm} style={buttonStyle}>
           {showAddForm ? "Close" : "Add Item"}
         </button>
         {editMode && (
-          <button className="ui-button" type="button" onClick={() => setShowItemList((current) => !current)} style={{ ...buttonStyle, backgroundColor: showItemList ? "#dbeafe" : "white", gridColumn: "1 / -1", justifySelf: "center", width: "50%" }}>
+          <button className="ui-button" type="button" data-tooltip="Browse and edit timeline items" onClick={() => setShowItemList((current) => !current)} style={{ ...buttonStyle, backgroundColor: showItemList ? "#dbeafe" : "white", gridColumn: "1 / -1", justifySelf: "center", width: "50%" }}>
             Items
           </button>
         )}
@@ -163,6 +163,7 @@ function TimelineControlsImpl({
           <button
             className="ui-button"
             type="button"
+            data-tooltip="Find a timeline item by name"
             aria-expanded={searchOpen}
             onClick={() => {
               setSearchOpen((current) => !current);
@@ -216,10 +217,10 @@ function TimelineControlsImpl({
       <div className="control-section">
         <span className="control-heading">View</span>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: "6px" }}>
-        <button className="ui-button" type="button" title="Zoom in" onClick={onZoomIn} style={buttonStyle}>+</button>
-        <button className="ui-button" type="button" title="Zoom out" onClick={onZoomOut} style={buttonStyle}>-</button>
-        <button className="ui-button" type="button" title="Reset view" onClick={onResetView} style={buttonStyle}>Fit</button>
-        <button className="ui-button" type="button" title="Toggle fullscreen" onClick={onToggleFullscreen} style={buttonStyle}>Full</button>
+        <button className="ui-button" type="button" data-tooltip="Zoom in on the timeline" onClick={onZoomIn} style={buttonStyle}>+</button>
+        <button className="ui-button" type="button" data-tooltip="Zoom out on the timeline" onClick={onZoomOut} style={buttonStyle}>-</button>
+        <button className="ui-button" type="button" data-tooltip="Reset the timeline view" onClick={onResetView} style={buttonStyle}>Fit</button>
+        <button className="ui-button" type="button" data-tooltip="Toggle fullscreen mode" onClick={onToggleFullscreen} style={buttonStyle}>Full</button>
         </div>
       </div>
 
@@ -230,6 +231,7 @@ function TimelineControlsImpl({
             <button
               className="ui-button"
               type="button"
+              data-tooltip="Include this item's teachers and their teachers"
               aria-pressed={showAncestors}
               onClick={onToggleAncestors}
               style={{ ...buttonStyle, backgroundColor: showAncestors ? "#dbeafe" : "white" }}
@@ -239,6 +241,7 @@ function TimelineControlsImpl({
             <button
               className="ui-button"
               type="button"
+              data-tooltip="Include this item's students and their students"
               aria-pressed={showDescendants}
               onClick={onToggleDescendants}
               style={{ ...buttonStyle, backgroundColor: showDescendants ? "#dbeafe" : "white" }}
@@ -254,12 +257,12 @@ function TimelineControlsImpl({
 
       <label className="control-section" style={{ display: "block", color: "#334155", fontSize: "12px" }}>
         <span className="control-heading">Year spacing</span>
-        <input type="range" min="0.1" max="10" step="0.1" value={pixelsPerYear} onChange={(event) => setPixelsPerYear(Number(event.target.value))} style={{ display: "block", width: "100%", marginTop: "6px" }} />
+        <input type="range" min="0.1" max="10" step="0.1" value={pixelsPerYear} data-tooltip="Adjust spacing between timeline years" onChange={(event) => setPixelsPerYear(Number(event.target.value))} style={{ display: "block", width: "100%", marginTop: "6px" }} />
       </label>
 
       <label className="control-section" style={{ display: "block", color: "#334155", fontSize: "12px" }}>
         <span className="control-heading">Date Type</span>
-        <select value={calendarMode} onChange={(event) => setCalendarMode(event.target.value as CalendarMode)} style={{ display: "block", width: "100%", marginTop: "6px", padding: "7px", border: "1px solid #cbd5e1", borderRadius: "4px", backgroundColor: "white" }}>
+        <select value={calendarMode} data-tooltip="Choose which calendar labels appear on the timeline" onChange={(event) => setCalendarMode(event.target.value as CalendarMode)} style={{ display: "block", width: "100%", marginTop: "6px", padding: "7px", border: "1px solid #cbd5e1", borderRadius: "4px", backgroundColor: "white" }}>
           <option value="gregorian">Gregorian</option>
           <option value="hijri">Hijri</option>
         </select>
@@ -268,8 +271,8 @@ function TimelineControlsImpl({
       {editMode && (
         <div className="control-section" style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "6px" }}>
           <span className="control-heading" style={{ gridColumn: "1 / -1" }}>Data</span>
-          <button className="ui-button" type="button" onClick={onExport} style={buttonStyle}>Export CSV</button>
-          <button className="ui-button" type="button" onClick={() => fileInputRef.current?.click()} style={buttonStyle}>Import CSV</button>
+          <button className="ui-button" type="button" data-tooltip="Download all timeline items and tags as a CSV file" onClick={onExport} style={buttonStyle}>Export CSV</button>
+          <button className="ui-button" type="button" data-tooltip="Load timeline items and tags from a CSV file" onClick={() => fileInputRef.current?.click()} style={buttonStyle}>Import CSV</button>
           <input ref={fileInputRef} type="file" accept=".csv,text/csv" onChange={handleFileChange} style={{ display: "none" }} />
         </div>
       )}

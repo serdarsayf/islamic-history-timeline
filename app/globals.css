@@ -29,6 +29,43 @@ body {
   animation: panel-in 160ms ease-out both;
 }
 
+.hover-tooltip {
+  position: fixed;
+  z-index: 1000;
+  width: max-content;
+  max-width: min(240px, calc(100vw - 24px));
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+  background: rgba(20, 31, 44, 0.97);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.2);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.35;
+  white-space: normal;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, calc(-100% + 3px));
+  transition: opacity 90ms ease, transform 90ms ease, visibility 0s linear 90ms;
+}
+
+.hover-tooltip--visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, -100%);
+  transition-delay: 0s;
+}
+
+.hover-tooltip--below {
+  transform: translate(-50%, -3px);
+}
+
+.hover-tooltip--below.hover-tooltip--visible {
+  transform: translate(-50%, 0);
+}
+
 .ui-button {
   transition:
     transform 120ms ease,
@@ -295,6 +332,7 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .ui-panel,
+  .hover-tooltip,
   .ui-button,
   .ui-field,
   .ui-chip,

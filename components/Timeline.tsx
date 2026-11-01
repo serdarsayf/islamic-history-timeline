@@ -2299,6 +2299,7 @@ export default function Timeline() {
             <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
               {getLineageIds(visibleItems, selectedItem.id) && (
                 <button
+                  data-tooltip="Show this item's ancestors and descendants in the lineage view"
                   onClick={() => {
                     toggleLineageItem(selectedItem.id);
                     closeDetails();
@@ -2526,6 +2527,7 @@ export default function Timeline() {
       >
         <button
           type="button"
+          data-tooltip="Choose tags to filter the timeline"
           onClick={() => setShowTagPanel((current) => !current)}
           style={{
             padding: "8px 14px",
