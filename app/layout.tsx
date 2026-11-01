@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Historical Timeline",
-  description: "Explore and edit historical events and periods.",
+  title: "Timeline",
+  description: "Explore and edit the lives of Islamic figures.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
