@@ -1,5 +1,6 @@
 import { useCallback, useSyncExternalStore } from "react";
-import { defaultTags, normalizeTimelineTags } from "../lib/timeline/tags";
+import { normalizeTimelineTags } from "../lib/timeline/tags";
+import { defaultTimelineTags } from "../lib/timeline/defaultData";
 import { createPersistQueue } from "../lib/timeline/persistQueue";
 import type { TimelineTag } from "../lib/timeline/types";
 
@@ -26,12 +27,10 @@ function readTags() {
     const parsed: unknown = stored ? JSON.parse(stored) : null;
     cachedTags = Array.isArray(parsed)
       ? normalizeTimelineTags(parsed)
-      : stored
-        ? defaultTags
-        : defaultTags;
+      : defaultTimelineTags;
   } catch {
     cachedRaw = null;
-    cachedTags = defaultTags;
+    cachedTags = defaultTimelineTags;
   }
   return cachedTags;
 }
@@ -58,7 +57,7 @@ function subscribe(onChange: () => void) {
 }
 
 export function useTimelineTags() {
-  const tags = useSyncExternalStore(subscribe, readTags, () => defaultTags);
+  const tags = useSyncExternalStore(subscribe, readTags, () => defaultTimelineTags);
 
   const setTags = useCallback((update: TimelineTag[] | ((tags: TimelineTag[]) => TimelineTag[])) => {
     const nextTags = normalizeTimelineTags(

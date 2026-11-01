@@ -91,8 +91,8 @@ body {
 }
 
 .control-section {
-  padding-top: 12px;
-  margin-top: 12px;
+  padding-top: 10px;
+  margin-top: 10px;
   border-top: 1px solid #e2e8f0;
 }
 
@@ -259,13 +259,13 @@ body {
     top: 12px !important;
     right: auto !important;
     left: 12px !important;
-    width: min(360px, calc(100vw - 24px)) !important;
+    width: min(330px, calc(100vw - 24px)) !important;
     bottom: auto !important;
     max-height: 40dvh !important;
   }
 
   .timeline-tag-panel.timeline-tag-panel--settings {
-    width: min(500px, calc(100vw - 24px)) !important;
+    width: min(460px, calc(100vw - 24px)) !important;
   }
 
   .timeline-data-alert {

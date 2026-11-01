@@ -112,3 +112,25 @@ test("selecting a parent category includes items in nested categories", () => {
     [categorizedItems[0]]
   );
 });
+
+test("required tags intersect with the existing OR tag selection", () => {
+  const categorizedItems = [
+    { ...initialItems[0], tags: ["History"] },
+    { ...initialItems[1], tags: ["Modern"] },
+    { ...initialItems[2], tags: ["History", "Modern"] },
+    { ...initialItems[0], id: 4, tags: ["Other"] },
+  ];
+
+  assert.deepEqual(
+    filterItemsByTags(categorizedItems, ["History", "Modern"], tags),
+    categorizedItems.slice(0, 3)
+  );
+  assert.deepEqual(
+    filterItemsByTags(categorizedItems, ["History", "Modern"], tags, ["History"]),
+    [categorizedItems[0], categorizedItems[2]]
+  );
+  assert.deepEqual(
+    filterItemsByTags(categorizedItems, ["History", "Modern"], tags, ["History", "Modern"]),
+    [categorizedItems[2]]
+  );
+});

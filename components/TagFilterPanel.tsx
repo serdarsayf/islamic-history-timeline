@@ -8,6 +8,7 @@ import { useEscapeLayer } from "./useEscapeLayer";
 type TagFilterPanelProps = {
   tags: TimelineTag[];
   activeTagNames: string[];
+  requiredTagNames: string[];
   onExportCategory: (category: TimelineTag) => void;
   onImportCategory: (file: File) => void;
   onCreateTag: (name: string, color: string) => boolean;
@@ -19,12 +20,14 @@ type TagFilterPanelProps = {
   onSetTagParent: (tagName: string, parentName: string | null) => void;
   onDeleteTag: (tagName: string) => void;
   onToggle: (tagName: string) => void;
+  onToggleRequired: (tagName: string) => void;
   onClose: () => void;
 };
 
 function TagFilterPanelImpl({
   tags,
   activeTagNames,
+  requiredTagNames,
   onExportCategory,
   onImportCategory,
   onCreateTag,
@@ -36,6 +39,7 @@ function TagFilterPanelImpl({
   onSetTagParent,
   onDeleteTag,
   onToggle,
+  onToggleRequired,
   onClose,
 }: TagFilterPanelProps) {
   const categoryFileInput = useRef<HTMLInputElement>(null);
@@ -86,9 +90,10 @@ function TagFilterPanelImpl({
     () => tags.map((tag) => ({
       tag,
       active: activeTagNames.includes(tag.name),
+      required: requiredTagNames.includes(tag.name),
       rowIndent: Math.min(getTagDepth(tags, tag.name) * 12, 48),
     })),
-    [tags, activeTagNames]
+    [tags, activeTagNames, requiredTagNames]
   );
   const showSettings = settingsTag !== undefined;
 
@@ -105,14 +110,14 @@ function TagFilterPanelImpl({
   }
 
   return (
-    <aside className={`ui-panel timeline-floating-panel timeline-tag-panel${showSettings ? " timeline-tag-panel--settings" : ""}`} onPointerDown={(event) => event.stopPropagation()} style={{ position: "absolute", top: "16px", left: "16px", zIndex: 20, width: showSettings ? "min(500px, calc(100vw - 32px))" : "min(360px, calc(100vw - 32px))", maxHeight: "calc(100dvh - 32px)", overflowY: "auto", padding: "16px", boxSizing: "border-box", backgroundColor: "rgba(248,250,252,0.97)", border: "1px solid rgba(203,213,225,0.9)", borderRadius: "6px", boxShadow: "0 12px 28px rgba(15,23,42,0.24)" }}>
+    <aside className={`ui-panel timeline-floating-panel timeline-tag-panel${showSettings ? " timeline-tag-panel--settings" : ""}`} onPointerDown={(event) => event.stopPropagation()} style={{ position: "absolute", top: "16px", left: "16px", zIndex: 20, width: showSettings ? "min(460px, calc(100vw - 32px))" : "min(330px, calc(100vw - 32px))", maxHeight: "calc(100dvh - 32px)", overflowY: "auto", padding: "13px", boxSizing: "border-box", backgroundColor: "rgba(248,250,252,0.97)", border: "1px solid rgba(203,213,225,0.9)", borderRadius: "6px", boxShadow: "0 12px 28px rgba(15,23,42,0.24)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
         <strong style={{ color: "#1e293b" }}>{settingsTag ? `${settingsTag.name} tag settings` : "Tags"}</strong>
         {showSettings && <button type="button" onClick={() => setSettingsTagName(null)} aria-label="Back to tags" title="Back to tags" style={{ padding: "5px 8px", border: "1px solid #cbd5e1", borderRadius: "4px", backgroundColor: "white", color: "#334155", cursor: "pointer", fontSize: "12px" }}>Back</button>}
         <button type="button" onClick={onClose} aria-label="Close tags" style={{ border: "none", background: "transparent", color: "#64748b", fontSize: "18px", cursor: "pointer" }}>x</button>
       </div>
       {settingsTag ? (
-        <div style={{ display: "grid", gap: "12px" }}>
+        <div style={{ display: "grid", gap: "10px" }}>
           <label style={{ display: "grid", gap: "5px", color: "#334155", fontSize: "12px" }}>
             Name
             <input
@@ -187,6 +192,7 @@ function TagFilterPanelImpl({
           <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
             <button type="button" title="Move tag up" aria-label="Move tag up" disabled={settingsSiblingIndex <= 0} onClick={() => onMoveTag(settingsTag.name, -1)} style={{ width: "34px", height: "32px", border: "1px solid #cbd5e1", borderRadius: "4px", backgroundColor: "white", color: "#334155", cursor: settingsSiblingIndex <= 0 ? "default" : "pointer", opacity: settingsSiblingIndex <= 0 ? 0.4 : 1 }}>↑</button>
             <button type="button" title="Move tag down" aria-label="Move tag down" disabled={settingsSiblingIndex === settingsSiblings.length - 1} onClick={() => onMoveTag(settingsTag.name, 1)} style={{ width: "34px", height: "32px", border: "1px solid #cbd5e1", borderRadius: "4px", backgroundColor: "white", color: "#334155", cursor: settingsSiblingIndex === settingsSiblings.length - 1 ? "default" : "pointer", opacity: settingsSiblingIndex === settingsSiblings.length - 1 ? 0.4 : 1 }}>↓</button>
+            <button type="button" title={`Download ${settingsTag.name} tag`} aria-label={`Download ${settingsTag.name} tag`} onClick={() => onExportCategory(settingsTag)} style={{ padding: "7px 10px", border: "1px solid #cbd5e1", borderRadius: "4px", backgroundColor: "white", color: "#334155", cursor: "pointer", fontSize: "12px" }}>⇩ Download tag</button>
             <button type="button" onClick={() => {
               onDeleteTag(settingsTag.name);
               setSettingsTagName(null);
@@ -195,10 +201,12 @@ function TagFilterPanelImpl({
         </div>
       ) : (
         <>
-          {tags.length === 0 ? <p style={{ margin: 0, color: "#64748b", fontSize: "13px" }}>No tags yet.</p> : tagRows.map(({ tag, active, rowIndent }) => {
+          {tags.length === 0 ? <p style={{ margin: 0, color: "#64748b", fontSize: "13px" }}>No tags yet.</p> : tagRows.map(({ tag, active, required, rowIndent }) => {
             return <div key={tag.name} style={{ display: "flex", gap: "5px", marginBottom: "5px", marginLeft: `${rowIndent}px` }}>
               <button className="ui-chip" type="button" onClick={() => onToggle(tag.name)} style={{ display: "flex", alignItems: "flex-start", gap: "8px", flex: 1, minWidth: 0, padding: "8px", border: `1px solid ${tag.color}`, borderRadius: "4px", backgroundColor: active ? tag.color : "white", color: active ? "white" : "#334155", cursor: "pointer", textAlign: "left" }}><span style={{ width: "10px", height: "10px", flex: "0 0 auto", marginTop: "3px", borderRadius: "50%", backgroundColor: active ? "white" : tag.color }} /><span style={{ minWidth: 0, lineHeight: 1.35, overflowWrap: "anywhere" }}>{tag.name}</span></button>
-              <button type="button" title={`Export ${tag.name} tag`} aria-label={`Export ${tag.name} tag`} onClick={() => onExportCategory(tag)} style={{ width: "34px", height: "34px", flex: "0 0 auto", border: "1px solid #cbd5e1", borderRadius: "4px", backgroundColor: "white", color: "#334155", cursor: "pointer", fontSize: "18px" }}>⇩</button>
+              <button type="button" title={required ? `Stop requiring ${tag.name}` : `Require items to have ${tag.name}`} aria-label={required ? `Stop requiring ${tag.name} tag` : `Require items to have ${tag.name} tag`} aria-pressed={required} onClick={() => onToggleRequired(tag.name)} style={{ width: "34px", height: "34px", flex: "0 0 auto", padding: 0, border: `1px solid ${required ? "#93c5fd" : "#cbd5e1"}`, borderRadius: "4px", backgroundColor: required ? "#dbeafe" : "white", color: required ? "#1d4ed8" : "#475569", cursor: "pointer", fontSize: "18px", lineHeight: 1, fontWeight: 600 }}>
+                ∩
+              </button>
               <button type="button" title={`Settings for ${tag.name}`} aria-label={`Settings for ${tag.name}`} onClick={() => setSettingsTagName(tag.name)} style={{ width: "34px", height: "34px", flex: "0 0 auto", border: "1px solid #cbd5e1", borderRadius: "4px", backgroundColor: "white", color: "#334155", cursor: "pointer", fontSize: "17px" }}>⚙</button>
             </div>;
           })}

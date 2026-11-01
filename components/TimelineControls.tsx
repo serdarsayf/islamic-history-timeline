@@ -25,11 +25,16 @@ type TimelineControlsProps = {
   onToggleFullscreen: () => void;
   items: TimelineItem[];
   onSearchSelect: (item: TimelineItem) => void;
+  lineageActive: boolean;
+  showAncestors: boolean;
+  showDescendants: boolean;
+  onToggleAncestors: () => void;
+  onToggleDescendants: () => void;
 };
 
 const buttonStyle = {
-  minHeight: "36px",
-  padding: "7px 10px",
+  minHeight: "32px",
+  padding: "6px 8px",
   border: "1px solid #cbd5e1",
   borderRadius: "4px",
   backgroundColor: "white",
@@ -58,6 +63,11 @@ function TimelineControlsImpl({
   onToggleFullscreen,
   items,
   onSearchSelect,
+  lineageActive,
+  showAncestors,
+  showDescendants,
+  onToggleAncestors,
+  onToggleDescendants,
 }: TimelineControlsProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -123,10 +133,10 @@ function TimelineControlsImpl({
         top: "20px",
         right: "20px",
         zIndex: 10,
-        width: "min(310px, calc(100vw - 40px))",
+        width: "min(290px, calc(100vw - 40px))",
         maxHeight: "calc(100vh - 40px)",
         overflowY: "auto",
-        padding: "14px",
+        padding: "12px",
         boxSizing: "border-box",
         backgroundColor: "rgba(248,250,252,0.96)",
         border: "1px solid rgba(203,213,225,0.9)",
@@ -212,6 +222,35 @@ function TimelineControlsImpl({
         <button className="ui-button" type="button" title="Toggle fullscreen" onClick={onToggleFullscreen} style={buttonStyle}>Full</button>
         </div>
       </div>
+
+      {lineageActive && (
+        <div className="control-section">
+          <span className="control-heading">Lineage</span>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "6px" }}>
+            <button
+              className="ui-button"
+              type="button"
+              aria-pressed={showAncestors}
+              onClick={onToggleAncestors}
+              style={{ ...buttonStyle, backgroundColor: showAncestors ? "#dbeafe" : "white" }}
+            >
+              Ancestors
+            </button>
+            <button
+              className="ui-button"
+              type="button"
+              aria-pressed={showDescendants}
+              onClick={onToggleDescendants}
+              style={{ ...buttonStyle, backgroundColor: showDescendants ? "#dbeafe" : "white" }}
+            >
+              Descendents
+            </button>
+          </div>
+          <p style={{ margin: "6px 0 0", color: "#64748b", fontSize: "11px", lineHeight: 1.4 }}>
+            Hover over a box to highlight its direct students. Hold Shift to highlight its teachers.
+          </p>
+        </div>
+      )}
 
       <label className="control-section" style={{ display: "block", color: "#334155", fontSize: "12px" }}>
         <span className="control-heading">Year spacing</span>

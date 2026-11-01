@@ -4,7 +4,6 @@ import { pointerStore } from "./pointerStore";
 type PointerOverlayProps = {
   viewportWidth: number;
   pixelsPerYear: number;
-  zoom: number;
   bannerTop: number;
   renderHijriYear: (year: number) => ReactNode;
   renderTimelineYear: (year: number) => ReactNode;
@@ -13,12 +12,11 @@ type PointerOverlayProps = {
 function PointerOverlayImpl({
   viewportWidth,
   pixelsPerYear,
-  zoom,
   bannerTop,
   renderHijriYear,
   renderTimelineYear,
 }: PointerOverlayProps) {
-  const { x, position } = useSyncExternalStore(
+  const { x, position, zoom } = useSyncExternalStore(
     pointerStore.subscribe,
     pointerStore.getSnapshot,
     pointerStore.getSnapshot

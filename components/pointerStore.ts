@@ -3,9 +3,11 @@ export type PointerState = {
   x: number | null;
   // Live view position, which can be ahead of Timeline's committed state during a drag.
   position: number;
+  // Live zoom, which can also be ahead of Timeline's committed state.
+  zoom: number;
 };
 
-let state: PointerState = { x: null, position: 0 };
+let state: PointerState = { x: null, position: 0, zoom: 1 };
 const listeners = new Set<() => void>();
 
 export const pointerStore = {
@@ -18,7 +20,7 @@ export const pointerStore = {
   getSnapshot: () => state,
   set(patch: Partial<PointerState>) {
     const next = { ...state, ...patch };
-    if (next.x === state.x && next.position === state.position) return;
+    if (next.x === state.x && next.position === state.position && next.zoom === state.zoom) return;
     state = next;
     listeners.forEach((listener) => listener());
   },

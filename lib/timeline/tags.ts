@@ -293,18 +293,23 @@ export function getUsedTags(items: TimelineItem[], tags: TimelineTag[]) {
 export function filterItemsByTags(
   items: TimelineItem[],
   activeTagNames: string[],
-  tags: TimelineTag[] = []
+  tags: TimelineTag[] = [],
+  requiredTagNames: string[] = []
 ) {
-  if (activeTagNames.length === 0) return items;
   const activeTags = new Set(
     activeTagNames.flatMap((name) =>
       getTagBranchNames(tags, name).map(normalizeTagName)
     )
   );
-
-  return items.filter((item) =>
-    (item.tags ?? []).some((tag) =>
-      activeTags.has(normalizeTagName(tag))
-    )
+  const requiredTagBranches = requiredTagNames.map((name) =>
+    new Set(getTagBranchNames(tags, name).map(normalizeTagName))
   );
+
+  if (activeTags.size === 0 && requiredTagBranches.length === 0) return items;
+
+  return items.filter((item) => {
+    const itemTags = (item.tags ?? []).map(normalizeTagName);
+    const matchesActive = activeTags.size === 0 || itemTags.some((tag) => activeTags.has(tag));
+    return matchesActive && requiredTagBranches.every((branch) => itemTags.some((tag) => branch.has(tag)));
+  });
 }

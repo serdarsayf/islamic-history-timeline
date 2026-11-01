@@ -60,10 +60,10 @@ import {
   updateTimelineItem,
 } from "../lib/timeline/itemActions";
 import {
+  getAncestorIds,
   getDescendantIds,
   getLineageIds,
   getLineageLinks,
-  getStudentLineageIds,
 } from "../lib/timeline/lineage";
 import { getLineageBounds, getLineageRoutes } from "../lib/timeline/lineageRoutes";
 import { onPersistError } from "../lib/timeline/storage";
@@ -71,7 +71,7 @@ import { useTimelineItems } from "./useTimelineItems";
 import { useLayoutStableItems } from "./useLayoutStableItems";
 import PointerOverlay from "./PointerOverlay";
 import { pointerStore } from "./pointerStore";
-import { applyLiveTransforms, setAxisElement, setTicksElement, setWorldElement } from "./liveView";
+import { applyLiveTransforms, setAxisElement, setLineageElement, setTicksElement, setWorldElement } from "./liveView";
 import { buildItemDataWithTagPosition, itemToFormState } from "../lib/timeline/itemForm";
 import type { AddItemFormHandle } from "./AddItemForm";
 import {
@@ -195,6 +195,9 @@ function getTeacherOptions(items: TimelineItem[], editingItemId: number | null) 
 // Pixels of items and ticks rendered beyond the viewport; a drag commits to state after half of it.
 const PAN_PADDING_PX = 400;
 
+// Wheel zooming reaches React state at most this often, so culling and ticks catch up while items stay untouched.
+const ZOOM_COMMIT_MS = 100;
+
 function getAxisLayout(viewportHeight: number, verticalOffset: number) {
   const axisY = viewportHeight / 2 + verticalOffset;
   const needsPinning = axisY < 0 || axisY + 34 > viewportHeight;
@@ -263,24 +266,63 @@ export default function Timeline() {
   const [lineageItemId, setLineageItemId] =
     useState<number | null>(null);
 
+  const [showLineageAncestors, setShowLineageAncestors] = useState(false);
+  const [showLineageDescendants, setShowLineageDescendants] = useState(false);
+
   const [hoveredLineageItemId, setHoveredLineageItemId] =
     useState<number | null>(null);
+
+  const toggleLineageItem = useCallback((itemId: number) => {
+    if (lineageItemId === itemId) {
+      setLineageItemId(null);
+      setShowLineageAncestors(false);
+      setShowLineageDescendants(false);
+      setHoveredLineageItemId(null);
+      return;
+    }
+
+    setLineageItemId(itemId);
+    setShowLineageAncestors(false);
+    setShowLineageDescendants(true);
+  }, [lineageItemId]);
+
+  const toggleLineageAncestors = useCallback(() => {
+    const next = !showLineageAncestors;
+    setShowLineageAncestors(next);
+    if (!next && !showLineageDescendants) setLineageItemId(null);
+  }, [showLineageAncestors, showLineageDescendants]);
+
+  const toggleLineageDescendants = useCallback(() => {
+    const next = !showLineageDescendants;
+    setShowLineageDescendants(next);
+    if (!next && !showLineageAncestors) setLineageItemId(null);
+  }, [showLineageAncestors, showLineageDescendants]);
 
   const [shiftHeld, setShiftHeld] = useState(false);
 
   useEffect(() => {
-    const syncShift = (event: KeyboardEvent) => setShiftHeld(event.shiftKey);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      setShiftHeld(event.shiftKey);
+      if (event.key.toLowerCase() !== "l" || event.ctrlKey || event.metaKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+      if (selectedItemId === null || !getLineageIds(items, selectedItemId)) return;
+
+      event.preventDefault();
+      toggleLineageItem(selectedItemId);
+    };
+    const handleKeyUp = (event: KeyboardEvent) => setShiftHeld(event.shiftKey);
     const releaseShift = () => setShiftHeld(false);
 
-    window.addEventListener("keydown", syncShift);
-    window.addEventListener("keyup", syncShift);
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
     window.addEventListener("blur", releaseShift);
     return () => {
-      window.removeEventListener("keydown", syncShift);
-      window.removeEventListener("keyup", syncShift);
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("blur", releaseShift);
     };
-  }, []);
+  }, [items, selectedItemId, toggleLineageItem]);
 
   const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -342,6 +384,9 @@ export default function Timeline() {
   const [activeTagNames, setActiveTagNames] =
     useState<string[]>([]);
 
+  const [requiredTagNames, setRequiredTagNames] =
+    useState<string[]>([]);
+
   // Initial values for the open form; AddItemForm owns the draft after mount.
   const [formSeed, setFormSeed] = useState<ItemFormState>(initialItemFormState);
   const formHandleRef = useRef<AddItemFormHandle>(null);
@@ -371,6 +416,14 @@ export default function Timeline() {
   useEscapeLayer(lineageItemId !== null, () => setLineageItemId(null));
 
   const detailRef = useRef<HTMLDivElement>(null);
+  const detailPositionRef = useRef<{
+    x: number;
+    top: number;
+    height: number;
+    anchorX: number;
+    anchorPosition: number;
+    anchorY: number;
+  } | null>(null);
   const [detailHeight, setDetailHeight] = useState(320);
   const { schedule: scheduleDetailHeight } = useRafThrottle((height) => {
     setDetailHeight(height);
@@ -441,10 +494,18 @@ export default function Timeline() {
   const livePositionRef = useRef(viewPosition);
   const liveOffsetRef = useRef(verticalOffset);
   const isDraggingRef = useRef(false);
+  // Zoom runs ahead of the `zoom` state during wheel zooming; items and ticks follow it through the --tz CSS variable.
+  const liveZoomRef = useRef(zoom);
+  const zoomTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Lineage routes are computed at this lagging zoom and scaled to the live zoom in between.
+  const lineageZoom = useDeferredValue(zoom);
   const layoutRef = useRef({
     pixelsPerYear,
     zoom,
+    lineageZoom,
+    viewportWidth,
     viewportHeight,
+    verticalOffset,
     viewPosition,
     renderedAxisY,
     axisNeedsPinning,
@@ -454,15 +515,47 @@ export default function Timeline() {
   const applyLiveView = useCallback(() => {
     const layout = layoutRef.current;
     const position = livePositionRef.current;
+    const liveZoom = liveZoomRef.current;
     const live = getAxisLayout(layout.viewportHeight, liveOffsetRef.current);
-    const worldX = -position * layout.pixelsPerYear * layout.zoom;
-    const axisShift = live.rendered - layout.renderedAxisY;
-
-    applyLiveTransforms(worldX, live.axisY, axisShift);
-    pointerStore.set({ position });
+    applyLiveTransforms({
+      worldX: -position * layout.pixelsPerYear * liveZoom,
+      axisY: live.axisY,
+      axisShift: live.rendered - layout.renderedAxisY,
+      zoom: liveZoom,
+      lineageScale: liveZoom / layout.lineageZoom,
+    });
+    const detail = detailPositionRef.current;
+    const panel = detailRef.current;
+    if (detail && panel) {
+      const liveAnchorX = layout.viewportWidth / 2 +
+        (detail.anchorPosition - position) * layout.pixelsPerYear * liveZoom;
+      const liveAnchorY = layout.viewportHeight / 2 + liveOffsetRef.current +
+        (detail.anchorY - (layout.viewportHeight / 2 + layout.verticalOffset)) *
+          (liveZoom / layout.zoom);
+      const panelWidth = panel.getBoundingClientRect().width;
+      const halfWidth = panelWidth / 2;
+      const top = Math.min(
+        Math.max(detail.top + liveAnchorY - detail.anchorY, 20),
+        Math.max(20, layout.viewportHeight - 20 - detail.height)
+      );
+      const desiredX = detail.x + liveAnchorX - detail.anchorX;
+      const controlsLeft = layout.viewportWidth - 20 - 290;
+      const rightLimit = top < 360 && desiredX + halfWidth > controlsLeft
+        ? controlsLeft - 16 - halfWidth
+        : layout.viewportWidth - halfWidth - 20;
+      const x = Math.min(
+        Math.max(desiredX, halfWidth + 20),
+        Math.max(halfWidth + 20, rightLimit)
+      );
+      panel.style.translate = `${x - detail.x}px ${top - detail.top}px`;
+    }
+    pointerStore.set({ position, zoom: liveZoom });
   }, []);
 
   const commitLiveView = useCallback(() => {
+    if (zoomTimerRef.current !== null) clearTimeout(zoomTimerRef.current);
+    zoomTimerRef.current = null;
+    setZoom(liveZoomRef.current);
     setViewPosition(livePositionRef.current);
     setVerticalOffset(liveOffsetRef.current);
   }, []);
@@ -472,7 +565,7 @@ export default function Timeline() {
     const layout = layoutRef.current;
     const live = getAxisLayout(layout.viewportHeight, liveOffsetRef.current);
     const panned = Math.abs(livePositionRef.current - layout.viewPosition) *
-      layout.pixelsPerYear * layout.zoom;
+      layout.pixelsPerYear * liveZoomRef.current;
     if (
       panned > PAN_PADDING_PX / 2 ||
       live.needsPinning !== layout.axisNeedsPinning ||
@@ -482,27 +575,54 @@ export default function Timeline() {
     }
   }, [commitLiveView]);
 
+  // Applies a wheel or button zoom immediately and commits to state at most once per ZOOM_COMMIT_MS.
+  const setLiveView = useCallback((nextZoom: number, position: number, offset: number) => {
+    liveZoomRef.current = nextZoom;
+    livePositionRef.current = position;
+    liveOffsetRef.current = offset;
+    applyLiveView();
+    if (zoomTimerRef.current === null) {
+      zoomTimerRef.current = setTimeout(() => {
+        zoomTimerRef.current = null;
+        commitLiveView();
+      }, ZOOM_COMMIT_MS);
+    }
+    commitLiveViewIfNeeded();
+  }, [applyLiveView, commitLiveView, commitLiveViewIfNeeded]);
+
+  useEffect(() => () => {
+    if (zoomTimerRef.current !== null) clearTimeout(zoomTimerRef.current);
+  }, []);
+
   // Sets both the live refs and committed state, for actions that read or replace the view.
-  const setView = useCallback((position: number, offset: number) => {
+  const setView = useCallback((position: number, offset: number, nextZoom?: number) => {
     livePositionRef.current = position;
     liveOffsetRef.current = offset;
     setViewPosition(position);
     setVerticalOffset(offset);
+    if (nextZoom !== undefined) {
+      liveZoomRef.current = nextZoom;
+      setZoom(nextZoom);
+    }
   }, []);
 
   useLayoutEffect(() => {
     layoutRef.current = {
       pixelsPerYear,
       zoom,
+      lineageZoom,
+      viewportWidth,
       viewportHeight,
+      verticalOffset,
       viewPosition,
       renderedAxisY,
       axisNeedsPinning,
       axisPinnedToTop,
     };
-    if (!isDraggingRef.current) {
+    if (!isDraggingRef.current && zoomTimerRef.current === null) {
       livePositionRef.current = viewPosition;
       liveOffsetRef.current = verticalOffset;
+      liveZoomRef.current = zoom;
     }
     applyLiveView();
   });
@@ -522,10 +642,10 @@ export default function Timeline() {
     );
   }, [viewPosition, pixelsPerYear, zoom]);
 
-  // Independent of viewPosition, verticalOffset and viewport size, so panning leaves item props unchanged.
-  const getWorldPosition = useCallback(
-    (date: HistoricalDate) => dateToNumber(date) * pixelsPerYear * zoom,
-    [pixelsPerYear, zoom]
+  // Pixel position at zoom 1; items and ticks scale it with --tz, so it is independent of zoom, pan and viewport.
+  const getBaseX = useCallback(
+    (date: HistoricalDate) => dateToNumber(date) * pixelsPerYear,
+    [pixelsPerYear]
   );
 
   function renderYearLabel(year: number) {
@@ -786,6 +906,9 @@ export default function Timeline() {
     setActiveTagNames((currentNames) =>
       currentNames.map((name) => name === oldName ? newName : name)
     );
+    setRequiredTagNames((currentNames) =>
+      currentNames.map((name) => name === oldName ? newName : name)
+    );
     return true;
   }, [tags, setItems, setTags]);
 
@@ -824,6 +947,9 @@ export default function Timeline() {
       tags: currentForm.tags.filter((name) => name !== tagName),
     }));
     setActiveTagNames((currentNames) =>
+      currentNames.filter((name) => name !== tagName)
+    );
+    setRequiredTagNames((currentNames) =>
       currentNames.filter((name) => name !== tagName)
     );
   }, [setItems, setTags]);
@@ -883,7 +1009,7 @@ export default function Timeline() {
 
     const newZoom = Math.min(
       Math.max(
-        zoom * zoomFactor,
+        liveZoomRef.current * zoomFactor,
         0.25
       ),
       5
@@ -894,11 +1020,12 @@ export default function Timeline() {
 
     const livePosition = livePositionRef.current;
     const liveOffset = liveOffsetRef.current;
+    const liveZoom = liveZoomRef.current;
 
     const historicalPositionUnderMouse =
       livePosition +
       mouseOffsetFromCenter /
-        (pixelsPerYear * zoom);
+        (pixelsPerYear * liveZoom);
 
     const newViewPosition =
       historicalPositionUnderMouse -
@@ -911,21 +1038,21 @@ export default function Timeline() {
     const newVerticalOffset =
       liveOffset +
       mouseOffsetFromAxis *
-        (1 - newZoom / zoom);
+        (1 - newZoom / liveZoom);
 
-    setView(newViewPosition, newVerticalOffset);
-    setZoom(newZoom);
+    setLiveView(newZoom, newViewPosition, newVerticalOffset);
   }
 
   const zoomBy = useCallback((factor: number) => {
-    setZoom((currentZoom) =>
-      Math.min(Math.max(currentZoom * factor, 0.25), 5)
+    setLiveView(
+      Math.min(Math.max(liveZoomRef.current * factor, 0.25), 5),
+      livePositionRef.current,
+      liveOffsetRef.current
     );
-  }, []);
+  }, [setLiveView]);
 
   const resetView = useCallback(() => {
-    setView(dateToNumber({ year: 800, era: "CE" }), 0);
-    setZoom(1);
+    setView(dateToNumber({ year: 800, era: "CE" }), 0, 1);
   }, [setView]);
 
   const handleSearchSelect = useCallback((item: TimelineItem) => {
@@ -933,8 +1060,9 @@ export default function Timeline() {
       ? null
       : getLineageIds(items, lineageItemId);
     const row = getItemRows(items, pixelsPerYear, searchLineageIds ?? undefined).get(item.id) ?? 0;
-    const itemDistance = getItemDistance(row, zoom);
+    const itemDistance = getItemDistance(row, liveZoomRef.current);
     setActiveTagNames([]);
+    setRequiredTagNames([]);
     setView(
       dateToNumber(item.startDate),
       item.position === "above" ? itemDistance : -itemDistance
@@ -945,7 +1073,7 @@ export default function Timeline() {
       setHighlightedItemId(null);
       highlightTimer.current = null;
     }, 2400);
-  }, [lineageItemId, items, pixelsPerYear, zoom, setView]);
+  }, [lineageItemId, items, pixelsPerYear, setView]);
 
   const toggleFullscreen = useCallback(() => {
     if (!document.fullscreenElement) {
@@ -1002,7 +1130,7 @@ export default function Timeline() {
 
     const positionMoved =
       deltaX /
-      (pixelsPerYear * zoom);
+      (pixelsPerYear * liveZoomRef.current);
 
     livePositionRef.current =
       dragStartPosition.current -
@@ -1175,6 +1303,13 @@ export default function Timeline() {
         : [...currentTags, tagName]
     );
   }, []);
+  const handleToggleRequiredTag = useCallback((tagName: string) => {
+    setRequiredTagNames((currentNames) =>
+      currentNames.includes(tagName)
+        ? currentNames.filter((name) => name !== tagName)
+        : [...currentNames, tagName]
+    );
+  }, []);
   const handleCloseTagPanel = useCallback(() => setShowTagPanel(false), []);
 
   // ─────────────────────────────────────
@@ -1213,12 +1348,9 @@ export default function Timeline() {
     [pixelsPerYear, zoom]
   );
 
-  const itemLabelFontSize =
-    20 * zoom;
-
   const visibleItems = useMemo(
-    () => filterItemsByTags(items, activeTagNames, tags),
-    [items, activeTagNames, tags]
+    () => filterItemsByTags(items, activeTagNames, tags, requiredTagNames),
+    [items, activeTagNames, tags, requiredTagNames]
   );
   const renderItems = useMemo(
     () => visibleItems.filter((item) =>
@@ -1239,12 +1371,24 @@ export default function Timeline() {
   );
   // Lineage layout ignores colour, description and text colour, so those edits keep this array.
   const lineageLayoutItems = useLayoutStableItems(visibleItems);
-  const lineageZoom = useDeferredValue(zoom);
   const lineageIds = useMemo(
-    () => lineageItemId === null
-      ? null
-      : getStudentLineageIds(lineageLayoutItems, lineageItemId),
-    [lineageLayoutItems, lineageItemId]
+    () => {
+      if (
+        lineageItemId === null ||
+        (!showLineageAncestors && !showLineageDescendants) ||
+        !lineageLayoutItems.some((item) => item.id === lineageItemId)
+      ) return null;
+
+      const ids = new Set([lineageItemId]);
+      if (showLineageAncestors) {
+        getAncestorIds(lineageLayoutItems, lineageItemId).forEach((id) => ids.add(id));
+      }
+      if (showLineageDescendants) {
+        getDescendantIds(lineageLayoutItems, lineageItemId).forEach((id) => ids.add(id));
+      }
+      return ids.size > 1 ? ids : null;
+    },
+    [lineageLayoutItems, lineageItemId, showLineageAncestors, showLineageDescendants]
   );
   const lineageLinks = useMemo(
     () => lineageIds ? getLineageLinks(lineageLayoutItems, lineageIds) : [],
@@ -1526,13 +1670,17 @@ export default function Timeline() {
         top: number;
         height: number;
         itemX: number;
+        anchorX: number;
         itemEdgeY: number;
         boxEdgeY: number;
+        anchorPosition: number;
+        anchorY: number;
         showConnector: boolean;
       }
     | null = null;
 
   if (selectedItem) {
+    let selectedItemPosition = dateToNumber(selectedItem.startDate);
     let selectedItemX =
       viewportWidth / 2 +
       getRelativePosition(
@@ -1543,6 +1691,10 @@ export default function Timeline() {
       selectedItem.type === "period" &&
       selectedItem.endDate
     ) {
+      selectedItemPosition = (
+        dateToNumber(selectedItem.startDate) +
+        dateToNumber(selectedItem.endDate)
+      ) / 2;
       selectedItemX =
         viewportWidth / 2 +
         (getRelativePosition(
@@ -1608,13 +1760,21 @@ export default function Timeline() {
       top,
       height,
       itemX: selectedItemX,
+      anchorX: selectedItemX,
       itemEdgeY,
       boxEdgeY,
+      anchorPosition: selectedItemPosition,
+      anchorY: selectedItemY,
       showConnector: placeAbove
         ? boxEdgeY <= itemEdgeY
         : boxEdgeY >= itemEdgeY,
     };
   }
+
+  useLayoutEffect(() => {
+    detailPositionRef.current = detailWindowPosition;
+    applyLiveView();
+  }, [detailWindowPosition, applyLiveView]);
 
   // ─────────────────────────────────────
   // RENDER
@@ -1682,7 +1842,6 @@ export default function Timeline() {
         <PointerOverlay
           viewportWidth={viewportWidth}
           pixelsPerYear={pixelsPerYear}
-          zoom={zoom}
           bannerTop={pointerYearBannerTop}
           renderHijriYear={renderHijriYearLabel}
           renderTimelineYear={renderTimelineYearLabel}
@@ -1762,7 +1921,8 @@ export default function Timeline() {
               transform: `translate3d(${-viewPosition * pixelsPerYear * zoom}px, 0px, 0)`,
               pointerEvents: "none",
               zIndex: axisNeedsPinning ? 7 : 2,
-            }}
+              "--tz": zoom,
+            } as React.CSSProperties}
           >
           {ticks.map(
             (year) => {
@@ -1782,7 +1942,7 @@ export default function Timeline() {
                     };
 
               const x =
-                getWorldPosition(
+                getBaseX(
                   date
                 );
 
@@ -1803,7 +1963,7 @@ export default function Timeline() {
                     position:
                       "absolute",
                     left:
-                      `${x}px`,
+                      `calc(var(--tz) * ${x}px)`,
                     top:
                       `${renderedAxisY}px`,
                     transform:
@@ -1907,16 +2067,27 @@ export default function Timeline() {
               height: 0,
               transform: `translate3d(${-viewPosition * pixelsPerYear * zoom}px, ${axisY}px, 0)`,
               zIndex: 5,
-            }}
+              "--tz": zoom,
+            } as React.CSSProperties}
           >
           {normalizedLineageRoutes.length > 0 && (
             <svg
+              ref={setLineageElement}
               aria-hidden="true"
               width="1"
               height="1"
-              style={{ position: "absolute", left: 0, top: 0, overflow: "visible", pointerEvents: "none", zIndex: 4 }}
+              style={{
+                position: "absolute",
+                left: 0,
+                top: 0,
+                overflow: "visible",
+                pointerEvents: "none",
+                zIndex: 4,
+                transform: `scale(${zoom / lineageZoom})`,
+                transformOrigin: "0 0",
+              }}
             >
-              <g transform={`scale(${zoom / lineageZoom})`}>
+              <g>
                 {normalizedLineageBounds && (
                   <rect
                     x={normalizedLineageBounds.left}
@@ -1937,7 +2108,7 @@ export default function Timeline() {
           {renderItems.map(
             (item) => {
               const x =
-                getWorldPosition(
+                getBaseX(
                   item.startDate
                 );
 
@@ -1950,7 +2121,7 @@ export default function Timeline() {
                   item,
                   row,
                   0,
-                  zoom
+                  1
                 );
 
               // Calculate period width.
@@ -1964,12 +2135,12 @@ export default function Timeline() {
                 item.endDate
               ) {
                 const startX =
-                  getWorldPosition(
+                  getBaseX(
                     item.startDate
                   );
 
                 const endX =
-                  getWorldPosition(
+                  getBaseX(
                     item.endDate
                   );
 
@@ -1985,11 +2156,9 @@ export default function Timeline() {
                   key={item.id}
                   item={item}
                   row={row}
-                  zoom={zoom}
                   x={x}
                   y={y}
                   periodWidth={periodWidth}
-                  labelFontSize={itemLabelFontSize}
                   highlighted={highlightedItemId === item.id}
                   glow={hoveredLinkedIds.has(item.id)}
                   onItemPointerDown={onItemPointerDown}
@@ -2128,9 +2297,12 @@ export default function Timeline() {
             {/* Edit + close buttons */}
 
             <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-              {getStudentLineageIds(visibleItems, selectedItem.id) && (
+              {getLineageIds(visibleItems, selectedItem.id) && (
                 <button
-                  onClick={() => setLineageItemId((current) => current === selectedItem.id ? null : selectedItem.id)}
+                  onClick={() => {
+                    toggleLineageItem(selectedItem.id);
+                    closeDetails();
+                  }}
                   aria-pressed={lineageItemId === selectedItem.id}
                   style={{
                     border: "1px solid #cbd5e1",
@@ -2336,6 +2508,11 @@ export default function Timeline() {
         onToggleFullscreen={toggleFullscreen}
         items={items}
         onSearchSelect={handleSearchSelect}
+        lineageActive={lineageItemId !== null}
+        showAncestors={showLineageAncestors}
+        showDescendants={showLineageDescendants}
+        onToggleAncestors={toggleLineageAncestors}
+        onToggleDescendants={toggleLineageDescendants}
       />
 
       <div
@@ -2368,6 +2545,7 @@ export default function Timeline() {
         <TagFilterPanel
           tags={tags}
           activeTagNames={activeTagNames}
+          requiredTagNames={requiredTagNames}
           onExportCategory={handleExportCategory}
           onImportCategory={handleCategoryImport}
           onCreateTag={handleCreateTagFromMenu}
@@ -2379,6 +2557,7 @@ export default function Timeline() {
           onSetTagParent={handleSetTagParent}
           onDeleteTag={handleDeleteTag}
           onToggle={handleToggleTag}
+          onToggleRequired={handleToggleRequiredTag}
           onClose={handleCloseTagPanel}
         />
       )}

@@ -1,5 +1,5 @@
 import { useCallback, useSyncExternalStore } from "react";
-import { initialItems } from "../lib/timeline/data";
+import { defaultTimelineItems } from "../lib/timeline/defaultData";
 import {
   readStoredItems,
   subscribeToStoredItems,
@@ -9,9 +9,9 @@ import type { TimelineItem } from "../lib/timeline/types";
 
 export function useTimelineItems() {
   const items = useSyncExternalStore(
-    subscribeToStoredItems,
-    () => readStoredItems(initialItems),
-    () => initialItems
+     subscribeToStoredItems,
+     () => readStoredItems(defaultTimelineItems),
+     () => defaultTimelineItems
   );
 
   // Stable across renders: reads the latest items itself instead of
@@ -19,7 +19,7 @@ export function useTimelineItems() {
   // just because the array reference changed.
   const setItems = useCallback(
     (update: TimelineItem[] | ((items: TimelineItem[]) => TimelineItem[])) => {
-      const currentItems = readStoredItems(initialItems);
+      const currentItems = readStoredItems(defaultTimelineItems);
       const nextItems = typeof update === "function" ? update(currentItems) : update;
       writeStoredItems(nextItems);
     },

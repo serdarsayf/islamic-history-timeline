@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { initialItems } from "./data";
 import {
+  getAncestorIds,
   getDescendantIds,
   getLineageIds,
   getLineageLinks,
@@ -36,6 +37,11 @@ test("lineage links join each teacher to their student within the lineage", () =
 test("descendants exclude the item itself and its teachers", () => {
   assert.deepEqual([...getDescendantIds(items, 1)].sort(byNumber), [2, 3, 4]);
   assert.deepEqual([...getDescendantIds(items, 3)], []);
+});
+
+test("ancestors exclude the item itself and all students", () => {
+  assert.deepEqual([...getAncestorIds(items, 3)].sort(byNumber), [1, 2]);
+  assert.deepEqual([...getAncestorIds(items, 1)], []);
 });
 
 test("student lineage contains the clicked item and only its downstream students", () => {

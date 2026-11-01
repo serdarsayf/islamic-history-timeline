@@ -35,6 +35,10 @@ export function getDescendantIds(items: TimelineItem[], itemId: number) {
   return walk(itemId, buildEdges(items).students);
 }
 
+export function getAncestorIds(items: TimelineItem[], itemId: number) {
+  return walk(itemId, buildEdges(items).teachers);
+}
+
 export function getStudentLineageIds(items: TimelineItem[], itemId: number) {
   if (!items.some((item) => item.id === itemId)) return null;
 
